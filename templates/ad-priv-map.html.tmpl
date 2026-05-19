@@ -82,6 +82,39 @@
   #impact-panel .actions button:hover { background:#f3f4f6; }
   #impact-panel .actions button.primary { background:#1f2937; color:#fff; border-color:#1f2937; }
   #impact-panel .actions button.primary:hover { background:#374151; }
+  #findings-panel { position:absolute; top:140px; left:20px; background:#fff; border:1px solid #ddd; border-radius:6px; font-size:12px; box-shadow:0 2px 12px rgba(0,0,0,0.12); z-index:15; width:400px; max-height:calc(100vh - 170px); display:flex; flex-direction:column; }
+  #findings-panel.hidden { display:none; }
+  #findings-panel .head { padding:8px 12px; background:#7f1d1d; color:#fff; border-radius:6px 6px 0 0; display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  #findings-panel .head .title { font-weight:600; font-size:13px; flex:1; }
+  #findings-panel .head button { background:transparent; border:none; cursor:pointer; color:#fff; font-size:16px; padding:0 4px; }
+  #findings-panel .summary { padding:6px 12px; background:#fef2f2; color:#7f1d1d; border-bottom:1px solid #fecaca; font-size:11px; line-height:1.5; }
+  #findings-panel .summary strong { font-size:13px; }
+  #findings-panel .body { overflow-y:auto; padding:4px 0; }
+  #findings-panel .sec { border-bottom:1px solid #f3f4f6; }
+  #findings-panel .sec-head { padding:7px 12px; cursor:pointer; font-weight:600; display:flex; justify-content:space-between; align-items:center; background:#f9fafb; user-select:none; gap:8px; }
+  #findings-panel .sec-head:hover { background:#fef3c7; }
+  #findings-panel .sec-head .lbl { flex:1; }
+  #findings-panel .sec-head .lbl .why { font-weight:400; font-size:10px; color:#6b7280; display:block; margin-top:2px; }
+  #findings-panel .sec-head .count { color:#fff; background:#dc2626; padding:1px 6px; border-radius:8px; font-weight:600; font-size:10px; min-width:18px; text-align:center; }
+  #findings-panel .sec-head .count.zero { background:#9ca3af; }
+  #findings-panel .sec-head .chev { color:#9ca3af; transition:transform 0.15s; font-size:10px; }
+  #findings-panel .sec.collapsed .sec-head .chev { transform:rotate(-90deg); }
+  #findings-panel .sec-body { padding:2px 0; }
+  #findings-panel .sec.collapsed .sec-body { display:none; }
+  #findings-panel .f-row { padding:4px 12px 4px 22px; display:flex; justify-content:space-between; gap:6px; cursor:pointer; border-left:3px solid transparent; }
+  #findings-panel .f-row:hover { background:#fef3c7; border-left-color:#dc2626; }
+  #findings-panel .f-row .lbl { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #findings-panel .f-row .lbl .detail { color:#6b7280; font-size:10px; margin-left:4px; }
+  #findings-panel .f-row .lbl .badge-t0 { display:inline-block; padding:0 4px; margin-left:4px; font-size:9px; font-weight:600; color:#fff; background:#dc2626; border-radius:3px; }
+  #findings-panel .f-row .meta { color:#dc2626; font-size:10px; font-weight:600; flex:0 0 auto; align-self:center; }
+  #findings-panel .empty { padding:6px 22px; color:#9ca3af; font-style:italic; font-size:11px; }
+  #findings-panel .actions { padding:8px 12px; background:#f9fafb; border-top:1px solid #e5e7eb; border-radius:0 0 6px 6px; display:flex; gap:8px; }
+  #findings-panel .actions button { flex:1; padding:5px 10px; font-size:11px; cursor:pointer; border:1px solid #d1d5db; background:#fff; border-radius:4px; }
+  #findings-panel .actions button:hover { background:#f3f4f6; }
+  #findings-panel .actions button.primary { background:#7f1d1d; color:#fff; border-color:#7f1d1d; }
+  #findings-panel .actions button.primary:hover { background:#991b1b; }
+  #toggle-findings-btn .badge { display:inline-block; margin-left:6px; padding:0 5px; background:#dc2626; color:#fff; font-size:10px; font-weight:600; border-radius:8px; min-width:14px; text-align:center; }
+  #toggle-findings-btn .badge.zero { background:#9ca3af; }
 </style>
 </head>
 <body>
@@ -121,6 +154,7 @@
       </select>
     </label>
     <button id="toggle-paths-btn" type="button" style="padding:4px 10px; cursor:pointer;">Top-Pfade</button>
+    <button id="toggle-findings-btn" type="button" style="padding:4px 10px; cursor:pointer;" title="Anomalien / verdaechtige Mitgliedschaften">Findings <span class="badge zero" id="findings-badge">0</span></button>
     <button id="refit-btn" type="button" style="padding:4px 10px; cursor:pointer;" title="Ansicht auf sichtbare Nodes zuruecksetzen">Refit</button>
   </div>
   <div class="grp">
@@ -182,6 +216,19 @@
     <button id="paths-close" title="Schliessen">&times;</button>
   </div>
   <div class="body" id="paths-body"></div>
+</div>
+
+<div id="findings-panel" class="hidden">
+  <div class="head">
+    <span class="title">Anomalien &amp; verdaechtige Mitgliedschaften</span>
+    <button id="findings-close" title="Schliessen">&times;</button>
+  </div>
+  <div class="summary" id="findings-summary"></div>
+  <div class="body" id="findings-body"></div>
+  <div class="actions">
+    <button type="button" id="findings-refresh">Neu pruefen</button>
+    <button type="button" id="findings-export" class="primary">CSV exportieren</button>
+  </div>
 </div>
 
 <div id="impact-panel" class="hidden">
@@ -250,6 +297,7 @@
   };
 
   let highlightId = null;  // ID des aktuell markierten Nodes fuer Pfad-Hervorhebung
+  let customHighlightSet = null;  // Set von Node-IDs, die zusammen markiert werden (z.B. Cycle-Members aus Findings)
 
   const HIGHLIGHT_COLOR = '#dc2626';   // rot fuer Pfad
   const DIMMED_BG       = '#e5e7eb';   // hellgrau fuer ausgeblendete Nodes
@@ -334,6 +382,7 @@
   }
 
   function nodeVisible(node) {
+    if (customHighlightSet && customHighlightSet.has(node.id)) return true;  // Custom-Highlight uebersteuert alle Filter
     if (state.tier0Only && !isTier0(node)) return false;
     if (state.activeOnly && node.nodeType === 'User' && node.nodeEnabled === false) return false;
     if (state.hideComps && node.nodeType === 'Computer') return false;
@@ -712,16 +761,31 @@
       baseSet = new Set(allNodesData.map(n => n.id));
     }
 
+    // customHighlightSet (Findings) erweitert baseSet, damit die Nodes garantiert sichtbar werden,
+    // auch wenn Display-Modus oder Filter sie sonst ausblenden wuerden.
+    if (customHighlightSet) {
+      customHighlightSet.forEach(id => baseSet.add(id));
+    }
+
     const visibleSet = new Set();
     allNodesData.forEach(n => {
       if (baseSet.has(n.id) && nodeVisible(n)) visibleSet.add(n.id);
     });
     currentVisible = visibleSet;
 
-    // pathSet (rote Hervorhebung) im "all"-Modus mit Selektion
-    const pathSet = (state.displayMode === 'all' && highlightId !== null && visibleSet.has(highlightId))
-      ? findReachable(highlightId, visibleSet)
-      : null;
+    // pathSet (rote Hervorhebung): customHighlightSet hat Vorrang, sonst 'all'+Selektion.
+    // Wenn customHighlightSet aktiv ist, dimmen wir auch im attack-surface- oder owned-cone-Modus
+    // alles auesserhalb -> dazu unterdruecken wir attackPathSet/ownedConeSet/distColored.
+    let pathSet = null;
+    if (customHighlightSet) {
+      pathSet = new Set();
+      customHighlightSet.forEach(id => { if (visibleSet.has(id)) pathSet.add(id); });
+      attackPathSet = null;
+      ownedConeSet  = null;
+      distColored   = false;
+    } else if (state.displayMode === 'all' && highlightId !== null && visibleSet.has(highlightId)) {
+      pathSet = findReachable(highlightId, visibleSet);
+    }
 
     // Layout per Modus setzen (programmatisch fuer attack-surface / owned-cone,
     // sonst Original-Positionen). Liefert true, wenn sich der Layout-Key
@@ -871,9 +935,12 @@
       } else {
         statsText += ' | Owned-Cone: bitte einen Node anklicken oder suchen';
       }
-    } else if (pathSet) {
+    } else if (pathSet && !customHighlightSet) {
       const hl = allNodesData.find(x => x.id === highlightId);
       statsText += ' | Pfad: ' + (hl ? hl.label : '?') + ' (' + pathSet.size + ' erreichbar)';
+    }
+    if (customHighlightSet) {
+      statsText += ' | Finding-Highlight: ' + customHighlightSet.size + ' Knoten markiert';
     }
     document.getElementById('stats').textContent = statsText;
 
@@ -909,6 +976,7 @@
     }).join('');
     body.querySelectorAll('.row').forEach(row => {
       row.addEventListener('click', () => {
+        customHighlightSet = null;
         highlightId = row.getAttribute('data-id');
         const sel = document.getElementById('display-mode');
         if (sel.value !== 'attack-surface') {
@@ -1150,6 +1218,7 @@
     body.querySelectorAll('.row[data-id]').forEach(r => {
       r.addEventListener('click', () => {
         const id = r.getAttribute('data-id');
+        customHighlightSet = null;
         highlightId = id;
         render();
         focusAdaptive(id, currentVisible);
@@ -1232,6 +1301,7 @@
   document.getElementById('impact-export').addEventListener('click', exportImpactCsv);
   document.getElementById('impact-highlight').addEventListener('click', () => {
     if (!impactCurrentId) return;
+    customHighlightSet = null;
     highlightId = impactCurrentId;
     state.displayMode = 'depth';
     document.getElementById('display-mode').value = 'depth';
@@ -1241,9 +1311,442 @@
     focusAdaptive(impactCurrentId, currentVisible);
   });
 
+  // ---- Findings: Anomalie-/Suspicious-Membership-Detektoren ---------------
+  // Erkennt Konstellationen, die fast immer auf einen Konfigurationsfehler
+  // ('falsch verwendetes MemberOf/Member') hindeuten. 8 Detektoren A-H.
+  //
+  // Schwellwerte sind bewusst konservativ gewaehlt, damit das Panel nicht
+  // mit Lärm flutet. Klassische Tier-0-Gruppen sind klein - wenn DA 50
+  // Members hat, ist *irgendwas* falsch.
+  const FIND_THRESHOLDS = {
+    largeGroupMembers:        20,   // ab dieser Direkt-Member-Anzahl gilt eine Gruppe als 'gross'
+    tier0LargeGroupTransMem:  20,   // Tier-0-Gruppe mit transitiv mehr Mitgliedern -> Flag
+    shortPathToTier0:         3,    // unprivilegierter User mit Distanz <= ... -> Flag
+    deepChainHops:            5,    // Tier-0-Distanz >= ... ueber Group-Chain -> Flag
+    computerNearTier0:        2     // Computer mit Distanz <= ... zu Tier-0 -> Flag
+  };
+
+  // Regex matcht Namen, die als 'erwartet privilegiert' gelten (Tier-0-typische SAM-Namen).
+  // Wird auf label + SamAccountName geprueft. Schluesselwoerter aus AD-Default-Gruppen
+  // (en) + ueblichen org-Konventionen (de/en). Bewusst grosszuegig - false negatives
+  // sind teurer als false positives bei dieser Heuristik.
+  const PRIVILEGED_NAME_RE = /admin|adm[-_]|opera|domain[ -._]?ad|enterprise[ -._]?ad|schema[ -._]?ad|tier[- ]?0|tier0|t0[-_]|backup[ -._]?op|account[ -._]?op|server[ -._]?op|print[ -._]?op|replicator|cert[ -._]?publish|key[ -._]?adm|protected[ -._]?users|dnsadm|krbtgt|root[ -._]?dom|sccm[ -._]?adm|exchange[ -._]?org/i;
+
+  function isExpectedPrivileged(node) {
+    if (!node) return false;
+    if (node.nodeAdminCount || node.nodeIsRoot) return true;
+    const l   = node.label || '';
+    const sam = node.SamAccountName || '';
+    if (PRIVILEGED_NAME_RE.test(l) || PRIVILEGED_NAME_RE.test(sam)) return true;
+    return false;
+  }
+
+  // Membership-Only-Adjazenzen (fuer Cycle-Detection und transitive Member-Zaehlung:
+  // ACL/Kerberos sind keine Mitgliedschaften und duerfen nicht durchwandert werden).
+  const adjOutMem = {};
+  const adjInMem  = {};
+  allEdgesData.forEach(e => {
+    if (e.edgeType && e.edgeType !== 'member') return;
+    if (!adjOutMem[e.from]) adjOutMem[e.from] = [];
+    if (!adjInMem[e.to])    adjInMem[e.to]    = [];
+    adjOutMem[e.from].push(e.to);
+    adjInMem[e.to].push(e.from);
+  });
+
+  // Direkter Member-Count (eingehende member-Edges) pro Gruppe.
+  const directMemberCount = {};
+  allEdgesData.forEach(e => {
+    if (e.edgeType && e.edgeType !== 'member') return;
+    directMemberCount[e.to] = (directMemberCount[e.to] || 0) + 1;
+  });
+
+  // Transitive Mitgliederzahl ueber adjInMem (nur Membership-Edges).
+  function transitiveMemberCount(groupId) {
+    const seen = new Set();
+    const q = [groupId];
+    while (q.length) {
+      const cur = q.shift();
+      (adjInMem[cur] || []).forEach(n => {
+        if (seen.has(n)) return;
+        seen.add(n);
+        q.push(n);
+      });
+    }
+    return seen.size;
+  }
+
+  // Wir cachen das Ergebnis pro Gruppe, weil das fuer grosse ADs sonst teuer ist.
+  const _transMemCache = {};
+  function transMemCached(id) {
+    if (_transMemCache[id] === undefined) _transMemCache[id] = transitiveMemberCount(id);
+    return _transMemCache[id];
+  }
+
+  // Cycle-Detection im Membership-Graph (nur 'member'-Edges, nur Group-Nodes).
+  // Liefert Liste von Cycles als Arrays von Node-IDs (ohne den schliessenden Knoten).
+  // Capped auf MAX_CYCLES, weil dichte Graphen viele kleine Cycles haben koennen.
+  function findCycles() {
+    const cycles = [];
+    const MAX_CYCLES   = 30;
+    const MAX_CYC_LEN  = 8;
+    const groupIds = allNodesData.filter(n => n.nodeType === 'Group').map(n => n.id);
+    const dfsState = {};   // 0=unseen, 1=on-stack, 2=done
+    groupIds.forEach(id => { dfsState[id] = 0; });
+    const path = [];
+    const cycleKeys = new Set();   // dedup identischer Cycles (rotiert/anders gestartet)
+
+    function dfs(node) {
+      if (cycles.length >= MAX_CYCLES) return;
+      dfsState[node] = 1;
+      path.push(node);
+      const out = adjOutMem[node] || [];
+      for (let i = 0; i < out.length; i++) {
+        if (cycles.length >= MAX_CYCLES) break;
+        const nx = out[i];
+        const nNode = nodeById(nx);
+        if (!nNode || nNode.nodeType !== 'Group') continue;
+        if (dfsState[nx] === 1) {
+          // Cycle entdeckt
+          const startIdx = path.indexOf(nx);
+          if (startIdx >= 0) {
+            const cyc = path.slice(startIdx);
+            if (cyc.length <= MAX_CYC_LEN) {
+              const key = [...cyc].sort().join('|');
+              if (!cycleKeys.has(key)) {
+                cycleKeys.add(key);
+                cycles.push(cyc);
+              }
+            }
+          }
+        } else if (dfsState[nx] === 0) {
+          dfs(nx);
+        }
+      }
+      path.pop();
+      dfsState[node] = 2;
+    }
+
+    for (let i = 0; i < groupIds.length; i++) {
+      if (cycles.length >= MAX_CYCLES) break;
+      if (dfsState[groupIds[i]] === 0) dfs(groupIds[i]);
+    }
+    return cycles;
+  }
+
+  // FSP-Type: Powershell exportiert 'ForeignSecurityPrincipal' (siehe Convergence.ps1).
+  const FSP_TYPE = 'ForeignSecurityPrincipal';
+
+  function computeFindings() {
+    const A = [], B = [], C = [], D = [], E = [], F = [], G = [], H = [];
+
+    // ---- A: Unprivilegierter User mit kurzem Tier-0-Pfad ------------------
+    allNodesData.forEach(n => {
+      if (n.nodeType !== 'User') return;
+      if (n.nodeAdminCount || n.nodeIsOrphan) return;
+      const d = distanceToTier0[n.id];
+      if (d === undefined || d === 0 || d > FIND_THRESHOLDS.shortPathToTier0) return;
+      if (isExpectedPrivileged(n)) return;
+      A.push({ type: 'A', primary: n.id, target: [n.id], distance: d,
+               detail: 'Distanz ' + d + ' zu Tier-0, keine AdminCount-Markierung, Name passt nicht zu Admin-Konventionen' });
+    });
+    A.sort((a, b) => a.distance - b.distance || (nodeById(a.primary).label || '').localeCompare(nodeById(b.primary).label || ''));
+
+    // ---- B: Generische Gruppe ist Member einer Tier-0-Gruppe --------------
+    // Fuer jede Tier-0-Gruppe (AdminCount=1 oder IsRoot): pruefe direkte Mitglieder
+    // *ueber Membership-Edges* (adjInMem), die selbst Group sind, !Tier-0, keinen
+    // privileged-Namen haben und 'gross' sind.
+    allNodesData.forEach(parent => {
+      if (parent.nodeType !== 'Group') return;
+      if (!(parent.nodeAdminCount || parent.nodeIsRoot)) return;
+      (adjInMem[parent.id] || []).forEach(memberId => {
+        const m = nodeById(memberId);
+        if (!m || m.nodeType !== 'Group') return;
+        if (m.nodeAdminCount || m.nodeIsRoot) return;
+        if (isExpectedPrivileged(m)) return;
+        const cnt = directMemberCount[m.id] || 0;
+        if (cnt < FIND_THRESHOLDS.largeGroupMembers) return;
+        B.push({ type: 'B', primary: m.id, target: [m.id, parent.id], parent: parent.id, memberCount: cnt,
+                 detail: '"' + (m.label || '?') + '" (' + cnt + ' direkte Members) ist Member von Tier-0-Gruppe "' + (parent.label || '?') + '"' });
+      });
+    });
+    B.sort((a, b) => b.memberCount - a.memberCount);
+
+    // ---- C: Auffaellig grosse Tier-0-Gruppe -------------------------------
+    allNodesData.forEach(n => {
+      if (n.nodeType !== 'Group') return;
+      if (!(n.nodeAdminCount || n.nodeIsRoot)) return;
+      const cnt = transMemCached(n.id);
+      if (cnt < FIND_THRESHOLDS.tier0LargeGroupTransMem) return;
+      C.push({ type: 'C', primary: n.id, target: [n.id], memberCount: cnt,
+               detail: cnt + ' transitive Mitglieder - Tier-0-Gruppen sollten <' + FIND_THRESHOLDS.tier0LargeGroupTransMem + ' Members haben' });
+    });
+    C.sort((a, b) => b.memberCount - a.memberCount);
+
+    // ---- D: Tiefe Mitgliedschafts-Kette zu Tier-0 -------------------------
+    // User oder Computer, die ueber lange nested-Chains an Tier-0 haengen.
+    allNodesData.forEach(n => {
+      if (n.nodeType !== 'User' && n.nodeType !== 'Computer') return;
+      if (n.nodeAdminCount) return;   // direkte AdminCount-User sind bewusst privilegiert
+      const d = distanceToTier0[n.id];
+      if (d === undefined || d < FIND_THRESHOLDS.deepChainHops) return;
+      // Skippe Faelle die schon in A oder H landen (kurze Distanz)
+      D.push({ type: 'D', primary: n.id, target: [n.id], distance: d,
+               detail: 'Erreicht Tier-0 ueber ' + d + ' Hops verschachtelter Gruppen - schwer auditierbar' });
+    });
+    D.sort((a, b) => b.distance - a.distance);
+
+    // ---- E: Zirkulaere Mitgliedschaft -------------------------------------
+    const cycles = findCycles();
+    cycles.forEach(cyc => {
+      const labels = cyc.map(id => (nodeById(id) && nodeById(id).label) || '?').join(' -> ');
+      E.push({ type: 'E', primary: cyc[0], target: cyc.slice(), cycleLen: cyc.length,
+               detail: cyc.length + '-Gruppen-Zyklus: ' + labels + ' -> ' + ((nodeById(cyc[0]) && nodeById(cyc[0]).label) || '?') });
+    });
+    E.sort((a, b) => a.cycleLen - b.cycleLen);
+
+    // ---- F: Disabled User in Tier-0 ---------------------------------------
+    allNodesData.forEach(n => {
+      if (n.nodeType !== 'User') return;
+      if (n.nodeEnabled !== false) return;
+      if (!n.nodeAdminCount && !n.nodeIsOrphan) return;
+      F.push({ type: 'F', primary: n.id, target: [n.id],
+               detail: 'Deaktivierter Account mit ' + (n.nodeAdminCount ? 'AdminCount=1' : 'SDProp-Orphan') + ' - kann reaktiviert werden und ist sofort wieder privilegiert' });
+    });
+    F.sort((a, b) => (nodeById(a.primary).label || '').localeCompare(nodeById(b.primary).label || ''));
+
+    // ---- G: ForeignSecurityPrincipal in Tier-0 ----------------------------
+    allNodesData.forEach(n => {
+      if (n.nodeType !== FSP_TYPE) return;
+      // FSP haengt direkt an einer Tier-0-Gruppe?
+      const t0Parents = (adjOut[n.id] || []).filter(pid => {
+        const p = nodeById(pid);
+        return p && (p.nodeAdminCount || p.nodeIsRoot);
+      });
+      if (t0Parents.length === 0) return;
+      const parentLabels = t0Parents.map(pid => (nodeById(pid).label || '?')).join(', ');
+      G.push({ type: 'G', primary: n.id, target: [n.id, ...t0Parents],
+               detail: 'Cross-Forest/External SID direkt in Tier-0: ' + parentLabels });
+    });
+
+    // ---- H: Computer-Account in Tier-0 ------------------------------------
+    allNodesData.forEach(n => {
+      if (n.nodeType !== 'Computer') return;
+      const d = distanceToTier0[n.id];
+      if (d === undefined || d > FIND_THRESHOLDS.computerNearTier0) return;
+      // direkt privilegierte Server-Namen (Tier-0 DCs) ausklammern? - schwer ohne Konvention,
+      // wir flaggen alle, da Computer-in-Tier-0 echtes Anti-Pattern ist (ausser bei DCs)
+      H.push({ type: 'H', primary: n.id, target: [n.id], distance: d,
+               detail: 'Computer-Konto Distanz ' + d + ' zu Tier-0 - typischer Indikator fuer Tier-Violation oder unbeabsichtigte Delegation' });
+    });
+    H.sort((a, b) => a.distance - b.distance);
+
+    return { A, B, C, D, E, F, G, H };
+  }
+
+  let findingsCache = null;
+
+  const FINDING_DEFS = [
+    { key: 'A', title: 'Unprivilegierter User nahe Tier-0',
+      why: 'User ohne AdminCount, deren Name nicht nach Admin klingt, mit Tier-0-Distanz <= ' + FIND_THRESHOLDS.shortPathToTier0 + '. Wahrscheinlich versehentliche Vererbung.',
+      meta: f => 'd=' + f.distance },
+    { key: 'B', title: 'Generische Gruppe in Tier-0-Gruppe',
+      why: 'Tier-0-Gruppe (AdminCount=1) hat eine "normale" Gruppe mit >=' + FIND_THRESHOLDS.largeGroupMembers + ' Members als Mitglied. Klassisches "MemberOf falsch verwendet"-Symptom.',
+      meta: f => f.memberCount + ' Members' },
+    { key: 'C', title: 'Auffaellig grosse Tier-0-Gruppe',
+      why: 'Tier-0-Gruppen sollten klein sein (~3-5 Konten). >=' + FIND_THRESHOLDS.tier0LargeGroupTransMem + ' transitive Members -> Wildwuchs.',
+      meta: f => f.memberCount + ' trans' },
+    { key: 'D', title: 'Tiefe Mitgliedschafts-Kette zu Tier-0',
+      why: 'Tier-0-Distanz >= ' + FIND_THRESHOLDS.deepChainHops + '. Lange verschachtelte Chains sind schwer zu auditieren und brechen oft Tiering.',
+      meta: f => f.distance + ' Hops' },
+    { key: 'E', title: 'Zirkulaere Gruppen-Mitgliedschaft',
+      why: 'Group A -> B -> ... -> A. AD erlaubt das in seltenen Faellen transitiv - praktisch immer ein Konfigurations-Bug.',
+      meta: f => f.cycleLen + '-Cycle' },
+    { key: 'F', title: 'Deaktivierter Account in Tier-0',
+      why: 'Disabled User mit AdminCount=1 oder SDProp-Orphan. Beim Reaktivieren sofort wieder Admin. Aufraeumen!',
+      meta: () => 'disabled' },
+    { key: 'G', title: 'ForeignSecurityPrincipal in Tier-0',
+      why: 'Cross-Forest SID direkt in einer Admin-Gruppe. Vertrauensbeziehung gewaehrt fremder Identitaet Tier-0.',
+      meta: () => 'FSP' },
+    { key: 'H', title: 'Computer-Konto nahe Tier-0',
+      why: 'Computer-Account mit Tier-0-Distanz <= ' + FIND_THRESHOLDS.computerNearTier0 + '. Indikator fuer Tier-Violation oder unconstrained Delegation.',
+      meta: f => 'd=' + f.distance }
+  ];
+
+  function totalFindings(f) {
+    return FINDING_DEFS.reduce((s, d) => s + (f[d.key] ? f[d.key].length : 0), 0);
+  }
+
+  function refreshFindingsBadge() {
+    const badge = document.getElementById('findings-badge');
+    if (!findingsCache) findingsCache = computeFindings();
+    const total = totalFindings(findingsCache);
+    badge.textContent = total;
+    badge.classList.toggle('zero', total === 0);
+  }
+
+  function renderFindings() {
+    if (!findingsCache) findingsCache = computeFindings();
+    const f = findingsCache;
+    const total = totalFindings(f);
+    const summary = document.getElementById('findings-summary');
+    if (total === 0) {
+      summary.innerHTML = '<strong>Keine Anomalien gefunden.</strong><br>Alle 8 Detektoren liefern 0 Treffer. Tier-0 sieht sauber aus - oder die Schwellwerte sind zu konservativ.';
+    } else {
+      summary.innerHTML = '<strong>' + total + ' verdaechtige Konstellation' + (total === 1 ? '' : 'en') + ' gefunden.</strong><br>Klick auf einen Eintrag markiert die betroffenen Knoten im Graph.';
+    }
+
+    const body = document.getElementById('findings-body');
+    const sections = FINDING_DEFS.map(def => {
+      const items = f[def.key] || [];
+      const cnt = items.length;
+      const countClass = cnt === 0 ? 'count zero' : 'count';
+      const collapsed = cnt === 0 ? ' collapsed' : '';
+      let inner;
+      if (cnt === 0) {
+        inner = '<div class="empty">Keine Treffer.</div>';
+      } else {
+        inner = items.map((it, idx) => {
+          const n = nodeById(it.primary);
+          if (!n) return '';
+          const t0b = isTier0(n) ? '<span class="badge-t0">T0</span>' : '';
+          return '<div class="f-row" data-fkey="' + def.key + '" data-fidx="' + idx + '">' +
+                 '<span class="lbl">' + escapeHtml(n.label || '?') + t0b +
+                 '<span class="detail">&nbsp;' + escapeHtml(it.detail || '') + '</span></span>' +
+                 '<span class="meta">' + escapeHtml(def.meta(it)) + '</span></div>';
+        }).join('');
+      }
+      return '<div class="sec' + collapsed + '" data-fsec="' + def.key + '">' +
+             '<div class="sec-head"><span class="lbl">' + escapeHtml(def.title) +
+             '<span class="why">' + escapeHtml(def.why) + '</span></span>' +
+             '<span class="' + countClass + '">' + cnt + '</span><span class="chev">&#9662;</span></div>' +
+             '<div class="sec-body">' + inner + '</div></div>';
+    });
+    body.innerHTML = sections.join('');
+
+    body.querySelectorAll('.sec-head').forEach(h => {
+      h.addEventListener('click', () => h.parentElement.classList.toggle('collapsed'));
+    });
+    body.querySelectorAll('.f-row').forEach(r => {
+      r.addEventListener('click', () => {
+        const k = r.getAttribute('data-fkey');
+        const i = parseInt(r.getAttribute('data-fidx'), 10);
+        const item = (findingsCache[k] || [])[i];
+        if (item) selectFinding(item);
+      });
+    });
+  }
+
+  // Markiert die Knoten eines Findings im Graph. Strategie pro Typ:
+  // - A/D/H (User/Computer mit Tier-0-Pfad): attack-surface mit Selektion -> zeigt shortest path
+  // - B (Gruppe in Tier-0): customHighlightSet mit beiden Endpunkten
+  // - C (grosse Tier-0-Gruppe): depth-Modus, Tiefe 1, alle direkten Members sichtbar
+  // - E (Cycle): customHighlightSet mit allen Cycle-Knoten
+  // - F (disabled Tier-0): depth-Modus, Tiefe 2, Pfad zur Tier-0-Quelle sichtbar
+  // - G (FSP): customHighlightSet mit FSP + Tier-0-Parents
+  function selectFinding(item) {
+    const t = item.type;
+    if (t === 'A' || t === 'D' || t === 'H') {
+      customHighlightSet = null;
+      highlightId = item.primary;
+      state.displayMode = 'attack-surface';
+      document.getElementById('display-mode').value = 'attack-surface';
+      render();
+      focusAdaptive(item.primary, currentVisible);
+    } else if (t === 'C') {
+      customHighlightSet = null;
+      highlightId = item.primary;
+      state.displayMode = 'depth';
+      document.getElementById('display-mode').value = 'depth';
+      state.depth = 1;
+      document.getElementById('depth-select').value = '1';
+      render();
+      focusAdaptive(item.primary, currentVisible);
+    } else if (t === 'F') {
+      customHighlightSet = null;
+      highlightId = item.primary;
+      state.displayMode = 'attack-surface';
+      document.getElementById('display-mode').value = 'attack-surface';
+      render();
+      focusAdaptive(item.primary, currentVisible);
+    } else {
+      // B, E, G: Mehrere Knoten markieren
+      customHighlightSet = new Set(item.target);
+      highlightId = item.primary;
+      // Auf 'all'-Modus wechseln, damit der pathSet-Highlight wirkt
+      state.displayMode = 'all';
+      document.getElementById('display-mode').value = 'all';
+      render();
+      focusAdaptive(item.primary, currentVisible);
+    }
+  }
+
+  function openFindingsPanel() {
+    // Falls Top-Pfade-Panel auf der gleichen Position sitzt: schliessen
+    document.getElementById('paths-panel').classList.add('hidden');
+    document.getElementById('findings-panel').classList.remove('hidden');
+    renderFindings();
+  }
+
+  function closeFindingsPanel() {
+    document.getElementById('findings-panel').classList.add('hidden');
+  }
+
+  function exportFindingsCsv() {
+    if (!findingsCache) findingsCache = computeFindings();
+    const lines = ['Type,Title,PrimaryId,PrimaryLabel,PrimaryType,Detail,Targets'];
+    FINDING_DEFS.forEach(def => {
+      const items = findingsCache[def.key] || [];
+      items.forEach(it => {
+        const n = nodeById(it.primary);
+        const targets = (it.target || []).map(id => {
+          const tn = nodeById(id);
+          return tn ? (tn.label || id) : id;
+        }).join(';');
+        lines.push([
+          def.key,
+          def.title,
+          it.primary,
+          n ? (n.label || '') : '',
+          n ? (n.nodeType || '') : '',
+          it.detail || '',
+          targets
+        ].map(csvEscape).join(','));
+      });
+    });
+    const filename = 'findings-' + (new Date().toISOString().slice(0,10)) + '.csv';
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 300);
+  }
+
+  document.getElementById('toggle-findings-btn').addEventListener('click', () => {
+    const panel = document.getElementById('findings-panel');
+    if (panel.classList.contains('hidden')) openFindingsPanel();
+    else closeFindingsPanel();
+  });
+  document.getElementById('findings-close').addEventListener('click', closeFindingsPanel);
+  document.getElementById('findings-refresh').addEventListener('click', () => {
+    Object.keys(_transMemCache).forEach(k => delete _transMemCache[k]);
+    findingsCache = null;
+    renderFindings();
+    refreshFindingsBadge();
+  });
+  document.getElementById('findings-export').addEventListener('click', exportFindingsCsv);
+
+  // Findings beim Laden einmal berechnen, damit der Badge im Toolbar gefuellt ist.
+  refreshFindingsBadge();
+
+  // toggle-paths-btn soll Findings-Panel schliessen, falls offen (gleicher Slot)
+  document.getElementById('toggle-paths-btn').addEventListener('click', () => {
+    document.getElementById('findings-panel').classList.add('hidden');
+  });
+
   render();
 
-  document.getElementById('display-mode').addEventListener('change', e => { state.displayMode = e.target.value; render(); });
+  document.getElementById('display-mode').addEventListener('change', e => { customHighlightSet = null; state.displayMode = e.target.value; render(); });
   document.getElementById('depth-select').addEventListener('change', e => {
     const v = parseInt(e.target.value, 10);
     state.depth = isNaN(v) ? 2 : v;
@@ -1390,6 +1893,7 @@
   function selectSearchResult(idx) {
     if (idx < 0 || idx >= searchResults.length) return;
     const node = searchResults[idx];
+    customHighlightSet = null;
     highlightId = node.id;
     render();
     focusAdaptive(node.id, currentVisible);
@@ -1401,8 +1905,9 @@
     searchResults = [];
     activeResultIdx = -1;
     document.getElementById('search-results').classList.add('hidden');
-    if (highlightId !== null) {
+    if (highlightId !== null || customHighlightSet !== null) {
       highlightId = null;
+      customHighlightSet = null;
       render();
     }
   }
