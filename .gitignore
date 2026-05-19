@@ -1,0 +1,15 @@
+# PowerShell / Visual Studio
+*.suo
+*.user
+.vs/
+
+# Exporte des Skripts
+AD-PrivMap-*/
+*.html
+*.json
+*.csv
+*.xml
+
+# OS
+.DS_Store
+Thumbs.db
