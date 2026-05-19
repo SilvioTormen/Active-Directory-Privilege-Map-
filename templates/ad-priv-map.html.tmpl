@@ -78,6 +78,7 @@
       </select>
     </label>
     <button id="toggle-paths-btn" type="button" style="padding:4px 10px; cursor:pointer;">Top-Pfade</button>
+    <button id="refit-btn" type="button" style="padding:4px 10px; cursor:pointer;" title="Ansicht auf sichtbare Nodes zuruecksetzen">Refit</button>
   </div>
   <div class="grp">
     <label>Layout:
@@ -392,12 +393,228 @@
     loadingProg.value = percent;
     loadingTxt.textContent = 'Stabilisierung: ' + percent + '% (' + params.iterations + ' / ' + params.total + ')';
   });
+  // ---- Layout-State -------------------------------------------------------
+  // originalPositions wird nach der ersten Stabilisierung eingefroren und ist
+  // die "freie" Layout-Referenz fuer depth/all-Modus. Wird beim Wechsel in
+  // strukturierte Modi (attack-surface, owned-cone) durch programmatische
+  // Layouts ersetzt und ggf. wieder restored.
+  let originalPositions = null;
+  let lastLayoutKey     = null;
+  let lastVisibleSize   = 0;
+  let lastZoomThreshold = true;  // sind Edge-Labels aktuell sichtbar?
+  let currentVisible    = new Set();   // wird von render() gepflegt
+  const LABEL_ZOOM_THRESHOLD = 0.6;
+
   net.on('stabilizationIterationsDone', () => {
-    // Nach erster Stabilisierung Physics ausschalten -> Filter und Highlight
-    // veraendern nur noch Properties, nicht die Positionen.
     net.setOptions({ physics: { enabled: false } });
+    if (!originalPositions) {
+      originalPositions = net.getPositions();
+    }
     hideLoading();
   });
+
+  // Nach Drag-End in freien Modi die Position als "neue Wahrheit" merken
+  net.on('dragEnd', params => {
+    if (!originalPositions || !params.nodes || params.nodes.length === 0) return;
+    if (currentLayoutKey() !== 'free') return;
+    const pos = net.getPositions(params.nodes);
+    params.nodes.forEach(id => { if (pos[id]) originalPositions[id] = pos[id]; });
+  });
+
+  net.on('zoom', () => applyLabelMask());
+
+  function currentLayoutKey() {
+    if (state.displayMode === 'attack-surface') {
+      return 'attack:' + state.maxDist + ':' + (highlightId || '');
+    }
+    if (state.displayMode === 'owned-cone' && highlightId) {
+      return 'cone:' + highlightId;
+    }
+    return 'free';
+  }
+
+  // ---- Programmatische Layouts ------------------------------------------
+  function restoreOriginalPositions() {
+    if (!originalPositions) return;
+    const updates = [];
+    for (const id in originalPositions) {
+      const p = originalPositions[id];
+      updates.push({ id: id, x: p.x, y: p.y });
+    }
+    nodesDS.update(updates);
+  }
+
+  // Layered Layout: Knoten werden nach layerFn(id) in horizontale Reihen
+  // gruppiert. Layer 0 oben, hoehere Layer weiter unten. Lange Reihen
+  // werden in mehrere Sub-Rows umgebrochen.
+  function applyLayeredLayout(visibleIds, layerFn) {
+    const buckets = {};
+    visibleIds.forEach(id => {
+      const l = layerFn(id);
+      if (l === undefined || l === null) return;
+      if (!buckets[l]) buckets[l] = [];
+      buckets[l].push(id);
+    });
+    const layers = Object.keys(buckets).map(Number).sort((a, b) => a - b);
+    if (layers.length === 0) return;
+
+    const X_STEP    = 200;
+    const Y_STEP    = 200;
+    const SUB_Y    = 70;
+    const MAX_COLS = 25;
+    const yMid     = ((layers.length - 1) * Y_STEP) / 2;
+    const updates  = [];
+
+    layers.forEach((l, lIdx) => {
+      const items = buckets[l].slice().sort();
+      const yBase = lIdx * Y_STEP - yMid;
+      const rows  = Math.ceil(items.length / MAX_COLS);
+      items.forEach((id, i) => {
+        const row    = Math.floor(i / MAX_COLS);
+        const col    = i % MAX_COLS;
+        const inRow  = Math.min(MAX_COLS, items.length - row * MAX_COLS);
+        const x      = (col - (inRow - 1) / 2) * X_STEP;
+        const yExtra = (rows > 1) ? (row - (rows - 1) / 2) * SUB_Y : 0;
+        updates.push({ id: id, x: x, y: yBase + yExtra });
+      });
+    });
+    nodesDS.update(updates);
+  }
+
+  // Radial Layout ab centerId entlang outbound-BFS. Konzentrische Ringe pro
+  // BFS-Distanz, gleichmaessig auf dem Ring verteilt, alternierende Phase
+  // gegen "Speichen-Effekt" benachbarter Layer.
+  function applyRadialLayout(centerId, visibleIds, direction) {
+    if (!visibleIds.has(centerId)) return;
+    const adj = (direction === 'inbound') ? adjIn : adjOut;
+    const layer = { [centerId]: 0 };
+    const queue = [centerId];
+    while (queue.length) {
+      const cur = queue.shift();
+      (adj[cur] || []).forEach(n => {
+        if (visibleIds.has(n) && layer[n] === undefined) {
+          layer[n] = layer[cur] + 1;
+          queue.push(n);
+        }
+      });
+    }
+
+    const buckets = {};
+    visibleIds.forEach(id => {
+      const l = (layer[id] !== undefined) ? layer[id] : -1;   // disconnected: outer ring
+      if (!buckets[l]) buckets[l] = [];
+      buckets[l].push(id);
+    });
+
+    const RADIUS_STEP = 280;
+    const updates = [];
+    const ringKeys = Object.keys(buckets).map(Number).sort((a, b) => a - b);
+    const disconnectedRing = ringKeys.includes(-1) ? Math.max(...ringKeys.filter(k => k >= 0), 0) + 1 : null;
+
+    ringKeys.forEach(l => {
+      const items = buckets[l].slice().sort();
+      if (l === 0) {
+        updates.push({ id: items[0], x: 0, y: 0 });
+        return;
+      }
+      const ringIdx  = (l === -1) ? disconnectedRing : l;
+      const r        = ringIdx * RADIUS_STEP;
+      const offset   = (ringIdx % 2) ? Math.PI / Math.max(1, items.length) : 0;
+      items.forEach((id, idx) => {
+        const angle = (idx / items.length) * 2 * Math.PI + offset;
+        updates.push({ id: id, x: r * Math.cos(angle), y: r * Math.sin(angle) });
+      });
+    });
+    nodesDS.update(updates);
+  }
+
+  function applyLayoutIfKeyChanged(visibleSet) {
+    const key = currentLayoutKey();
+    if (key === lastLayoutKey) return false;
+    lastLayoutKey = key;
+
+    if (state.displayMode === 'attack-surface' && originalPositions) {
+      applyLayeredLayout(visibleSet, id => distanceToTier0[id]);
+      return true;
+    }
+    if (state.displayMode === 'owned-cone' && highlightId && originalPositions) {
+      applyRadialLayout(highlightId, visibleSet, 'outbound');
+      return true;
+    }
+    if (originalPositions) {
+      restoreOriginalPositions();
+      return true;
+    }
+    return false;
+  }
+
+  // ---- Smart-Fit + Adaptive Focus ----------------------------------------
+  function smartFitVisible(visibleSet, force) {
+    if (!originalPositions) return;          // noch nicht stabilisiert
+    if (visibleSet.size === 0) return;
+    const sizeDiff = Math.abs(visibleSet.size - lastVisibleSize);
+    const sizeChangeRatio = sizeDiff / Math.max(1, allNodesData.length);
+    const triggered = force || sizeChangeRatio > 0.3;
+    lastVisibleSize = visibleSet.size;
+    if (!triggered) return;
+    net.fit({
+      nodes: [...visibleSet],
+      animation: { duration: 600, easingFunction: 'easeInOutQuad' }
+    });
+    // Cap: bei sehr wenigen Knoten nach dem Fit den Zoom hart begrenzen,
+    // damit Einzelknoten nicht den ganzen Viewport fuellen.
+    if (visibleSet.size <= 3) {
+      setTimeout(() => {
+        if (net.getScale() > 1.5) {
+          const vp = net.getViewPosition();
+          net.moveTo({ scale: 1.5, position: vp, animation: { duration: 200 } });
+        }
+      }, 650);
+    }
+  }
+
+  function focusAdaptive(id, visibleSet) {
+    const neighbors = ((adjOut[id] || []).filter(n => visibleSet.has(n)).length +
+                       (adjIn[id]  || []).filter(n => visibleSet.has(n)).length);
+    let scale;
+    if (visibleSet.size <= 5)        scale = 1.0;
+    else if (neighbors === 0)        scale = 1.8;
+    else if (neighbors <= 3)         scale = 1.4;
+    else if (neighbors <= 10)        scale = 1.0;
+    else                             scale = 0.7;
+    net.focus(id, { scale: scale, animation: { duration: 400, easingFunction: 'easeInOutQuad' } });
+  }
+
+  // ---- Importance-Sizing --------------------------------------------------
+  function importanceSize(node, mode) {
+    if (node.shape === 'box') return undefined;   // boxes auto-sizen via Label
+    let metric;
+    if (mode === 'attack-surface')      metric = (adjIn[node.id]  || []).length;
+    else if (mode === 'owned-cone')     metric = (adjOut[node.id] || []).length;
+    else                                metric = ((adjIn[node.id] || []).length + (adjOut[node.id] || []).length);
+    const base = 10 + Math.min(18, Math.log2(metric + 1) * 4);
+    return Math.round((isTier0(node) ? base + 4 : base));
+  }
+
+  // ---- Edge-Label-Zoom-Mask ----------------------------------------------
+  // Re-applied bei jedem Zoom und nach render(). Wenn der Zoom unter
+  // LABEL_ZOOM_THRESHOLD faellt, werden Labels geleert.
+  function applyLabelMask() {
+    if (!originalPositions) return;
+    const z = net.getScale();
+    const show = z >= LABEL_ZOOM_THRESHOLD;
+    if (show === lastZoomThreshold) return;
+    lastZoomThreshold = show;
+    const updates = [];
+    allEdgesData.forEach(e => {
+      const cur = edgesDS.get(e.id);
+      if (!cur || cur.hidden) return;
+      const intended = e._intendedLabel || '';
+      const desired  = show ? intended : '';
+      if (cur.label !== desired) updates.push({ id: e.id, label: desired });
+    });
+    if (updates.length) edgesDS.update(updates);
+  }
 
   function render() {
     // Schritt 1: Basis-Sichtbarkeit nach Display-Modus
@@ -442,16 +659,24 @@
     allNodesData.forEach(n => {
       if (baseSet.has(n.id) && nodeVisible(n)) visibleSet.add(n.id);
     });
+    currentVisible = visibleSet;
 
     // pathSet (rote Hervorhebung) im "all"-Modus mit Selektion
     const pathSet = (state.displayMode === 'all' && highlightId !== null && visibleSet.has(highlightId))
       ? findReachable(highlightId, visibleSet)
       : null;
 
+    // Layout per Modus setzen (programmatisch fuer attack-surface / owned-cone,
+    // sonst Original-Positionen). Liefert true, wenn sich der Layout-Key
+    // geaendert hat -> Smart-Fit am Ende auf jeden Fall ausloesen.
+    const layoutChanged = applyLayoutIfKeyChanged(visibleSet);
+
     const nodeUpdates = allNodesData.map(n => {
       const isVis = visibleSet.has(n.id);
       const u = { id: n.id, hidden: !isVis };
       if (isVis) {
+        const sz = importanceSize(n, state.displayMode);
+        if (sz !== undefined) u.size = sz;
         if (pathSet) {
           // 'all'-Modus mit Pfad
           if (pathSet.has(n.id)) {
@@ -498,6 +723,12 @@
       return u;
     });
 
+    // Labels werden bei niedrigem Zoom maskiert. labelShown spiegelt den
+    // aktuellen Wert von lastZoomThreshold; intended label landet auf
+    // e._intendedLabel, damit applyLabelMask sie spaeter ohne Re-render
+    // re-applien kann.
+    const labelShown = lastZoomThreshold;
+
     const edgeUpdates = allEdgesData.map(e => {
       const isKerb = (e.edgeType === 'kerberos-constrained' || e.edgeType === 'kerberos-rbcd');
       const isAcl  = (e.edgeType === 'acl-right');
@@ -507,6 +738,8 @@
 
       const isVis = typeAllowed && visibleSet.has(e.from) && visibleSet.has(e.to);
       const u = { id: e.id, hidden: !isVis };
+      let intended = '';
+
       if (isVis) {
         let baseColor = NORMAL_EDGE;
         let baseWidth = 1;
@@ -522,20 +755,17 @@
             u.width = 1;
           }
         } else if (attackPathSet) {
-          // Edge gehoert zum kuerzesten Pfad iff Distanzen fallen um 1
           const df = distanceToTier0[e.from];
           const dt = distanceToTier0[e.to];
           if (attackPathSet.has(e.from) && attackPathSet.has(e.to) && df === dt + 1) {
             u.color = { color: HIGHLIGHT_COLOR, highlight: HIGHLIGHT_COLOR };
             u.width = 3;
-            if (e.label) u.label = e.label;
+            if (e.label) intended = e.label;
           } else {
             u.color = { color: DIMMED_BG, opacity: 0.2 };
             u.width = 1;
           }
         } else if (distColored) {
-          // attack-surface ohne Selektion: Edges nach From-Distanz einfaerben,
-          // wenn sie tatsaechlich naeher Richtung Tier-0 fuehren.
           const df = distanceToTier0[e.from];
           const dt = distanceToTier0[e.to];
           if (df !== undefined && dt !== undefined && df === dt + 1) {
@@ -548,9 +778,11 @@
         } else {
           u.color = { color: baseColor };
           u.width = baseWidth;
-          if (e.label) u.label = e.label;
+          if (e.label) intended = e.label;
         }
       }
+      e._intendedLabel = intended;
+      u.label = labelShown ? intended : '';
       return u;
     });
 
@@ -592,6 +824,10 @@
     document.getElementById('dist-legend').style.display = (distColored ? '' : 'none');
 
     refreshTopPathsPanel();
+
+    // Smart-Fit am Ende: bei Layout-Key-Wechsel immer, sonst nur wenn sich
+    // das Visible-Set drastisch geaendert hat (>30% der Gesamtknoten).
+    smartFitVisible(visibleSet, layoutChanged);
   }
 
   // ---- Top-Pfade-Panel ----------------------------------------------------
@@ -623,7 +859,7 @@
           state.displayMode = 'attack-surface';
         }
         render();
-        net.focus(highlightId, { scale: 1.0, animation: { duration: 400 } });
+        focusAdaptive(highlightId, currentVisible);
       });
     });
   }
@@ -648,6 +884,13 @@
   });
   document.getElementById('paths-close').addEventListener('click', () => {
     document.getElementById('paths-panel').classList.add('hidden');
+  });
+  document.getElementById('refit-btn').addEventListener('click', () => {
+    if (currentVisible.size > 0) {
+      net.fit({ nodes: [...currentVisible], animation: { duration: 500, easingFunction: 'easeInOutQuad' } });
+    } else {
+      net.fit({ animation: { duration: 500 } });
+    }
   });
 
   document.getElementById('f-tier0').addEventListener('change', e => { state.tier0Only = e.target.checked; render(); });
@@ -693,7 +936,7 @@
     if (match) {
       highlightId = match.id;
       render();
-      net.focus(match.id, { scale: 1.0, animation: { duration: 400 } });
+      focusAdaptive(match.id, currentVisible);
     } else {
       highlightId = null;
       render();

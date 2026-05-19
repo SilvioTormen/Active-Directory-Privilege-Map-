@@ -34,6 +34,31 @@ Die HTML-Visualisierung berechnet im Browser zusaetzlich:
   Distanz zu Tier-0, Klick fokussiert den Node + schaltet in den
   Risiko-Modus.
 
+### Darstellungs-Adaptivitaet
+
+- **Programmatische Layouts pro Modus**: Im Tier-0-Risiko-Modus werden
+  alle sichtbaren Nodes nach ihrer Distanz zu Tier-0 horizontal in
+  Layern angeordnet (Tier-0 oben, Angreifer unten). Im
+  Owned-Cone-Modus radial um den selektierten Node, in Ringen pro
+  BFS-Hop. Frei verschiebbare Layouts bleiben in den anderen Modi.
+- **Smart Auto-Fit**: Beim Wechsel des Modus oder der Selektion fittet
+  sich die Kamera auf das aktuell sichtbare Set. Bei <= 3 sichtbaren
+  Nodes wird der Zoom hart bei 1.5 begrenzt, damit Einzelknoten nicht
+  den ganzen Viewport fuellen. Filter, die nur kleinere Aenderungen
+  bewirken (<30% des Gesamtbestands), lassen die Kamera in Ruhe.
+- **Adaptive Focus-Zoom**: Klick / Suchtreffer / Top-Pfad-Eintrag
+  fokussiert den Node mit einem Scale, der von der Anzahl sichtbarer
+  Nachbarn abhaengt - isolierte Nodes werden reingezoomt, Hubs eher
+  rausgezoomt.
+- **Importance-basierte Node-Groesse**: Dot-Nodes skalieren mit der
+  Anzahl ein- bzw. ausgehender Kanten (mode-abhaengig). Tier-0 bekommt
+  immer einen festen Groessen-Bonus.
+- **Edge-Label-Zoom-Mask**: Edge-Labels (Kerberos-SPNs, ACL-Rechte)
+  werden bei Zoom < 0.6 ausgeblendet, damit der Graph im
+  Uebersichts-Zoom nicht zur Spaghetti wird.
+- **Refit-Button** in der Toolbar zum manuellen Zuruecksetzen der
+  Ansicht.
+
 ## Voraussetzungen
 
 - Windows PowerShell 5.1 oder PowerShell 7+
