@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>AD Privilege Map - __DOMAIN__</title>
+<script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+<style>
+  html, body { margin:0; padding:0; height:100%; font-family:'Segoe UI',Tahoma,sans-serif; }
+  #header { padding:10px 20px; background:#1f2937; color:#fff; display:flex; align-items:center; justify-content:space-between; }
+  #header h1 { font-size:16px; margin:0; }
+  #header .meta { font-size:12px; opacity:0.7; }
+  #toolbar { padding:8px 20px; background:#f3f4f6; border-bottom:1px solid #d1d5db; display:flex; flex-wrap:wrap; gap:16px; align-items:center; font-size:13px; }
+  #toolbar label { display:flex; align-items:center; gap:4px; cursor:pointer; user-select:none; }
+  #toolbar select, #toolbar input[type='text'], #toolbar input[type='number'] { padding:4px 6px; font-size:13px; }
+  #toolbar .grp { display:flex; gap:12px; align-items:center; }
+  #toolbar .grp + .grp { border-left:1px solid #d1d5db; padding-left:16px; }
+  #network { width:100%; height:calc(100vh - 130px); background:#fafafa; }
+  .legend { position:absolute; top:140px; right:20px; background:#fff; padding:10px 14px; border:1px solid #ddd; border-radius:6px; font-size:12px; box-shadow:0 2px 8px rgba(0,0,0,0.08); z-index:10; max-width:300px; }
+  .legend div { margin:4px 0; }
+  .legend .hint { margin-top:8px; padding-top:8px; border-top:1px solid #eee; color:#555; font-size:11px; line-height:1.4; }
+  .swatch { display:inline-block; width:14px; height:14px; margin-right:8px; border-radius:3px; vertical-align:middle; }
+  #stats { position:absolute; bottom:10px; left:20px; background:#fff; padding:6px 10px; border:1px solid #ddd; border-radius:4px; font-size:11px; box-shadow:0 1px 4px rgba(0,0,0,0.08); z-index:10; }
+  #loading { position:fixed; top:130px; left:0; right:0; bottom:0; background:rgba(255,255,255,0.95); display:flex; align-items:center; justify-content:center; flex-direction:column; z-index:100; font-size:14px; color:#1f2937; }
+  #loading progress { width:300px; height:14px; margin:10px 0; }
+  #loading-text { font-size:12px; color:#6b7280; margin-top:4px; }
+</style>
+</head>
+<body>
+<div id="header">
+  <div><h1>AD Privilege Map - __DOMAIN__</h1></div>
+  <div class="meta">__TIMESTAMP__ &middot; __NODECOUNT__ Nodes &middot; __EDGECOUNT__ Edges &middot; __ROUNDS__ Runden</div>
+</div>
+
+<div id="toolbar">
+  <div class="grp">
+    <label>Anzeige:
+      <select id="display-mode">
+        <option value="depth" selected>Auswahl + Nachbarn</option>
+        <option value="all">Alle Nodes</option>
+      </select>
+    </label>
+    <label>Tiefe:
+      <select id="depth-select">
+        <option value="1">1</option>
+        <option value="2" selected>2</option>
+        <option value="3">3</option>
+        <option value="4">4</option>
+        <option value="6">6</option>
+        <option value="999">Alle</option>
+      </select>
+    </label>
+  </div>
+  <div class="grp">
+    <label>Layout:
+      <select id="layout-select">
+        <option value="physics">Physics</option>
+        <option value="hierarchical">Hierarchisch (Tier-0 oben)</option>
+      </select>
+    </label>
+  </div>
+  <div class="grp">
+    <label><input type="checkbox" id="f-tier0"> Nur Tier-0</label>
+    <label><input type="checkbox" id="f-active"> Nur aktive User</label>
+    <label><input type="checkbox" id="f-hidecomp"> Computer aus</label>
+    <label><input type="checkbox" id="f-hidefsp"> Foreign SPs aus</label>
+    <label><input type="checkbox" id="f-hidelateral"> Laterale Gruppen aus</label>
+    <label><input type="checkbox" id="f-hidelatmem"> Lat. Members aus</label>
+    <label><input type="checkbox" id="f-hidelatpar"> Lat. Parents aus</label>
+    <label><input type="checkbox" id="f-hidekerb"> Kerberos-Edges aus</label>
+    <label><input type="checkbox" id="f-hideacl"> ACL-Edges aus</label>
+    <label>Min. Memberships pro User: <input type="number" id="f-minmem" value="0" min="0" max="50" style="width:50px;"></label>
+  </div>
+  <div class="grp">
+    <label>Suche: <input type="text" id="search" placeholder="Name..." style="width:200px;"></label>
+  </div>
+</div>
+
+<div id="network"></div>
+
+<div class="legend">
+  <div><span class="swatch" style="background:#dc2626"></span>Tier-0 Root-Gruppe</div>
+  <div><span class="swatch" style="background:#ea580c"></span>Gruppe (AdminCount=1)</div>
+  <div><span class="swatch" style="background:#f59e0b"></span>Gruppe (normal)</div>
+  <div><span class="swatch" style="background:#fcd34d"></span>Gruppe (lateral, nur via A2)</div>
+  <div><span class="swatch" style="background:#fef3c7"></span>Gruppe (Member einer lat. Gruppe)</div>
+  <div><span class="swatch" style="background:#d9f99d"></span>Gruppe (Parent einer lat. Gruppe)</div>
+  <div><span class="swatch" style="background:#b91c1c"></span>User (AdminCount=1)</div>
+  <div><span class="swatch" style="background:#7c2d12"></span>SDProp-Waise</div>
+  <div><span class="swatch" style="background:#3b82f6"></span>User (aktiv)</div>
+  <div><span class="swatch" style="background:#bfdbfe"></span>User (Member einer lat. Gruppe)</div>
+  <div><span class="swatch" style="background:#9ca3af"></span>User (deaktiviert)</div>
+  <div><span class="swatch" style="background:#10b981"></span>Computer</div>
+  <div><span class="swatch" style="background:#bbf7d0"></span>Computer (lat. Member)</div>
+  <div><span class="swatch" style="background:#a855f7"></span>Foreign SP</div>
+  <div><span class="swatch" style="background:#64748b"></span>OU</div>
+  <div class="hint">Pfeilrichtung A -&gt; B = "A ist Mitglied von B"<br>Klick auf Node oder Eingabe im Suchfeld = Pfad markieren<br><br>Edge-Farben:<br><span style="color:#555;font-weight:bold">grau</span> = Mitgliedschaft<br><span style="color:#7c3aed;font-weight:bold">lila</span> = Kerberos-Delegation<br><span style="color:#f97316;font-weight:bold">orange</span> = ACL-Recht</div>
+</div>
+
+<div id="stats"></div>
+
+<div id="loading">
+  <div>Map wird berechnet...</div>
+  <progress id="loading-progress" value="0" max="100"></progress>
+  <div id="loading-text">Initialisierung...</div>
+</div>
+
+<script>
+  const allNodesData = __NODESJSON__;
+  const allEdgesData = __EDGESJSON__;
+  // Edges mit IDs versehen (Voraussetzung fuer DataSet.update)
+  allEdgesData.forEach((e, idx) => { e.id = 'e' + idx; });
+
+  // Adjacency-Listen einmalig vorberechnen (fuer BFS in beide Richtungen)
+  const adjOut = {};
+  const adjIn  = {};
+  allEdgesData.forEach(e => {
+    if (!adjOut[e.from]) adjOut[e.from] = [];
+    if (!adjIn[e.to])    adjIn[e.to]    = [];
+    adjOut[e.from].push(e.to);
+    adjIn[e.to].push(e.from);
+  });
+
+  // Anzahl ausgehender Edges pro User-Node (= Group-Memberships)
+  const userMembershipCount = {};
+  allEdgesData.forEach(e => {
+    userMembershipCount[e.from] = (userMembershipCount[e.from] || 0) + 1;
+  });
+
+  // Original-Farbe pro Node fuer Reset cachen
+  allNodesData.forEach(n => {
+    n._origColor = (typeof n.color === 'string') ? n.color : ((n.color && n.color.background) || '#888');
+  });
+
+  const state = {
+    displayMode: 'depth',
+    depth:       2,
+    tier0Only:   false,
+    activeOnly:  false,
+    hideComps:   false,
+    hideFsp:     false,
+    hideLateral: false,
+    hideLatMem:  false,
+    hideLatPar:  false,
+    hideKerb:    false,
+    hideAcl:     false,
+    minMembers:  0
+  };
+
+  let highlightId = null;  // ID des aktuell markierten Nodes fuer Pfad-Hervorhebung
+
+  const HIGHLIGHT_COLOR = '#dc2626';   // rot fuer Pfad
+  const DIMMED_BG       = '#e5e7eb';   // hellgrau fuer ausgeblendete Nodes
+  const DIMMED_FONT     = '#9ca3af';
+
+  function isTier0(node) {
+    if (node.nodeType === 'Group') return node.nodeIsRoot || node.nodeAdminCount;
+    if (node.nodeType === 'User')  return node.nodeAdminCount || node.nodeIsOrphan;
+    return false;
+  }
+
+  function nodeVisible(node) {
+    if (state.tier0Only && !isTier0(node)) return false;
+    if (state.activeOnly && node.nodeType === 'User' && node.nodeEnabled === false) return false;
+    if (state.hideComps && node.nodeType === 'Computer') return false;
+    if (state.hideFsp && node.nodeType === 'ForeignSecurityPrincipal') return false;
+    if (state.hideLateral && node.nodeLateral) return false;
+    if (state.hideLatMem && node.nodeLatMember) return false;
+    if (state.hideLatPar && node.nodeLatParent) return false;
+    if (state.minMembers > 0 && node.nodeType === 'User') {
+      const c = userMembershipCount[node.id] || 0;
+      if (c < state.minMembers) return false;
+    }
+    return true;
+  }
+
+  // BFS in beide Richtungen ab startId. Liefert Set aller erreichbaren, sichtbaren Node-IDs.
+  function findReachable(startId, visibleSet) {
+    const set = new Set([startId]);
+    let queue = [startId];
+    while (queue.length) {
+      const cur = queue.shift();
+      (adjOut[cur] || []).forEach(n => {
+        if (!set.has(n) && visibleSet.has(n)) { set.add(n); queue.push(n); }
+      });
+    }
+    queue = [startId];
+    while (queue.length) {
+      const cur = queue.shift();
+      (adjIn[cur] || []).forEach(n => {
+        if (!set.has(n) && visibleSet.has(n)) { set.add(n); queue.push(n); }
+      });
+    }
+    return set;
+  }
+
+  // BFS mit Tiefen-Limit (beide Richtungen). Fuer Display-Mode "Auswahl + Nachbarn".
+  function findReachableWithDepth(startId, maxDepth) {
+    const result = new Set([startId]);
+    if (maxDepth <= 0) return result;
+    let queue = [startId];
+    for (let d = 0; d < maxDepth; d++) {
+      const nextQueue = [];
+      queue.forEach(cur => {
+        (adjOut[cur] || []).forEach(n => {
+          if (!result.has(n)) { result.add(n); nextQueue.push(n); }
+        });
+        (adjIn[cur] || []).forEach(n => {
+          if (!result.has(n)) { result.add(n); nextQueue.push(n); }
+        });
+      });
+      queue = nextQueue;
+      if (queue.length === 0) break;
+    }
+    return result;
+  }
+
+  const NORMAL_EDGE = '#555';
+
+  const physicsOptions = {
+    layout: { hierarchical: { enabled: false } },
+    physics: {
+      enabled: true,
+      solver: 'barnesHut',
+      barnesHut: {
+        gravitationalConstant: -150000,
+        centralGravity: 0.005,
+        springLength: 500,
+        springConstant: 0.02,
+        damping: 0.4,
+        avoidOverlap: 1
+      },
+      stabilization: {
+        enabled: true,
+        iterations: 5000,
+        updateInterval: 50,
+        onlyDynamicEdges: false,
+        fit: true
+      },
+      minVelocity: 0.75
+    },
+    edges: { arrows: { to: { enabled: true, scaleFactor: 1.2 } }, color: NORMAL_EDGE, smooth: { type: 'continuous' } },
+    nodes: { font: { size: 12, face: 'Segoe UI' }, borderWidth: 1, size: 14 },
+    interaction: { hover: true, tooltipDelay: 150, navigationButtons: true, keyboard: true }
+  };
+
+  const hierarchicalOptions = {
+    layout: { hierarchical: { enabled: true, direction: 'DU', sortMethod: 'directed', nodeSpacing: 200, levelSeparation: 220, treeSpacing: 300, blockShifting: true, edgeMinimization: true } },
+    physics: { enabled: false },
+    edges: { arrows: { to: { enabled: true, scaleFactor: 1.2 } }, color: NORMAL_EDGE, smooth: { type: 'cubicBezier', forceDirection: 'vertical', roundness: 0.4 } },
+    nodes: { font: { size: 12, face: 'Segoe UI' }, borderWidth: 1, size: 14 },
+    interaction: { hover: true, tooltipDelay: 150, navigationButtons: true, keyboard: true }
+  };
+
+  // Persistente DataSets: Filter/Highlight nutzen update() statt setData(),
+  // damit Knotenpositionen erhalten bleiben und nichts mehr wackelt.
+  const nodesDS = new vis.DataSet(allNodesData);
+  const edgesDS = new vis.DataSet(allEdgesData);
+
+  const container = document.getElementById('network');
+  const net = new vis.Network(container, { nodes: nodesDS, edges: edgesDS }, physicsOptions);
+
+  // Loading-Overlay-Steuerung
+  const loadingDiv  = document.getElementById('loading');
+  const loadingProg = document.getElementById('loading-progress');
+  const loadingTxt  = document.getElementById('loading-text');
+  function showLoading(text) {
+    loadingDiv.style.display = 'flex';
+    loadingTxt.textContent = text || 'Map wird berechnet...';
+    loadingProg.value = 0;
+  }
+  function hideLoading() { loadingDiv.style.display = 'none'; }
+
+  net.on('stabilizationProgress', params => {
+    const percent = Math.round((params.iterations / params.total) * 100);
+    loadingProg.value = percent;
+    loadingTxt.textContent = 'Stabilisierung: ' + percent + '% (' + params.iterations + ' / ' + params.total + ')';
+  });
+  net.on('stabilizationIterationsDone', () => {
+    // Nach erster Stabilisierung Physics ausschalten -> Filter und Highlight
+    // veraendern nur noch Properties, nicht die Positionen.
+    net.setOptions({ physics: { enabled: false } });
+    hideLoading();
+  });
+
+  function render() {
+    // Schritt 1: Basis-Sichtbarkeit nach Display-Modus
+    let baseSet;
+    if (state.displayMode === 'depth') {
+      if (highlightId !== null) {
+        baseSet = findReachableWithDepth(highlightId, state.depth);
+      } else {
+        // Default-Einstieg: Tier-0-Kern (Roots + AdminCount=1 + Waisen)
+        baseSet = new Set();
+        allNodesData.forEach(n => {
+          if (isTier0(n)) baseSet.add(n.id);
+        });
+      }
+    } else {
+      baseSet = new Set(allNodesData.map(n => n.id));
+    }
+
+    // Schritt 2: Zusaetzliche Filter anwenden
+    const visibleSet = new Set();
+    allNodesData.forEach(n => {
+      if (baseSet.has(n.id) && nodeVisible(n)) visibleSet.add(n.id);
+    });
+
+    // Schritt 3: pathSet (rote Hervorhebung) nur im "all"-Modus, sonst kein Sinn
+    const pathSet = (state.displayMode === 'all' && highlightId !== null && visibleSet.has(highlightId))
+      ? findReachable(highlightId, visibleSet)
+      : null;
+
+    const nodeUpdates = allNodesData.map(n => {
+      const isVis = visibleSet.has(n.id);
+      const u = { id: n.id, hidden: !isVis };
+      if (isVis) {
+        if (pathSet) {
+          if (pathSet.has(n.id)) {
+            u.color = { background: n._origColor, border: HIGHLIGHT_COLOR };
+            u.borderWidth = (n.id === highlightId) ? 6 : 3;
+            u.font = { color: '#000', size: 12, face: 'Segoe UI' };
+          } else {
+            u.color = { background: DIMMED_BG, border: DIMMED_BG };
+            u.borderWidth = 1;
+            u.font = { color: DIMMED_FONT, size: 12, face: 'Segoe UI' };
+          }
+        } else if (state.displayMode === 'depth' && n.id === highlightId) {
+          // Im depth-Mode: das ausgewaehlte Zentrum rot markieren
+          u.color = { background: n._origColor, border: HIGHLIGHT_COLOR };
+          u.borderWidth = 6;
+          u.font = { color: '#000', size: 12, face: 'Segoe UI' };
+        } else {
+          u.color = n._origColor;
+          u.borderWidth = 1;
+          u.font = { color: '#000', size: 12, face: 'Segoe UI' };
+        }
+      }
+      return u;
+    });
+
+    const edgeUpdates = allEdgesData.map(e => {
+      // Edge-Typ-Filter
+      const isKerb = (e.edgeType === 'kerberos-constrained' || e.edgeType === 'kerberos-rbcd');
+      const isAcl  = (e.edgeType === 'acl-right');
+      let typeAllowed = true;
+      if (state.hideKerb && isKerb) typeAllowed = false;
+      if (state.hideAcl  && isAcl)  typeAllowed = false;
+
+      const isVis = typeAllowed && visibleSet.has(e.from) && visibleSet.has(e.to);
+      const u = { id: e.id, hidden: !isVis };
+      if (isVis) {
+        // Basis-Farbe nach Edge-Typ
+        let baseColor = NORMAL_EDGE;
+        let baseWidth = 1;
+        if (isKerb)     { baseColor = '#7c3aed'; baseWidth = 2; }
+        else if (isAcl) { baseColor = '#f97316'; baseWidth = 2; }
+
+        if (pathSet) {
+          if (pathSet.has(e.from) && pathSet.has(e.to)) {
+            u.color = { color: HIGHLIGHT_COLOR, highlight: HIGHLIGHT_COLOR };
+            u.width = 3;
+          } else {
+            u.color = { color: DIMMED_BG, opacity: 0.2 };
+            u.width = 1;
+          }
+        } else {
+          u.color = { color: baseColor };
+          u.width = baseWidth;
+          if (e.label) u.label = e.label;
+        }
+      }
+      return u;
+    });
+
+    nodesDS.update(nodeUpdates);
+    edgesDS.update(edgeUpdates);
+
+    let statsText = 'Sichtbar: ' + visibleSet.size + ' Nodes';
+    if (state.displayMode === 'depth') {
+      if (highlightId !== null) {
+        const hl = allNodesData.find(x => x.id === highlightId);
+        const dLabel = (state.depth >= 999) ? 'alle' : state.depth;
+        statsText += ' | Zentrum: ' + (hl ? hl.label : '?') + ' (Tiefe ' + dLabel + ')';
+      } else {
+        statsText += ' | Tier-0-Uebersicht - Knoten anklicken oder suchen, um zu erkunden';
+      }
+    } else if (pathSet) {
+      const hl = allNodesData.find(x => x.id === highlightId);
+      statsText += ' | Pfad: ' + (hl ? hl.label : '?') + ' (' + pathSet.size + ' erreichbar)';
+    }
+    document.getElementById('stats').textContent = statsText;
+  }
+  render();
+
+  document.getElementById('display-mode').addEventListener('change', e => { state.displayMode = e.target.value; render(); });
+  document.getElementById('depth-select').addEventListener('change', e => {
+    const v = parseInt(e.target.value, 10);
+    state.depth = isNaN(v) ? 2 : v;
+    render();
+  });
+
+  document.getElementById('f-tier0').addEventListener('change', e => { state.tier0Only = e.target.checked; render(); });
+  document.getElementById('f-active').addEventListener('change', e => { state.activeOnly = e.target.checked; render(); });
+  document.getElementById('f-hidecomp').addEventListener('change', e => { state.hideComps = e.target.checked; render(); });
+  document.getElementById('f-hidefsp').addEventListener('change', e => { state.hideFsp = e.target.checked; render(); });
+  document.getElementById('f-hidelateral').addEventListener('change', e => { state.hideLateral = e.target.checked; render(); });
+  document.getElementById('f-hidelatmem').addEventListener('change', e => { state.hideLatMem = e.target.checked; render(); });
+  document.getElementById('f-hidelatpar').addEventListener('change', e => { state.hideLatPar = e.target.checked; render(); });
+  document.getElementById('f-hidekerb').addEventListener('change', e => { state.hideKerb = e.target.checked; render(); });
+  document.getElementById('f-hideacl').addEventListener('change', e => { state.hideAcl = e.target.checked; render(); });
+  document.getElementById('f-minmem').addEventListener('change', e => {
+    const v = parseInt(e.target.value, 10);
+    state.minMembers = isNaN(v) || v < 0 ? 0 : v;
+    render();
+  });
+
+  document.getElementById('layout-select').addEventListener('change', e => {
+    showLoading('Layout-Wechsel...');
+    if (e.target.value === 'hierarchical') {
+      net.setOptions(hierarchicalOptions);
+      // Hierarchisches Layout hat keine Physics-Stabilization -> manuell fitten
+      setTimeout(() => {
+        net.fit({ animation: { duration: 400 } });
+        hideLoading();
+      }, 200);
+    } else {
+      // Zurueck zu Physics: re-enabled Stabilization
+      net.setOptions(physicsOptions);
+      // hideLoading wird durch stabilizationIterationsDone ausgeloest
+    }
+  });
+
+  // Suche: erster Match wird markiert, alle erreichbaren Pfade hervorgehoben
+  document.getElementById('search').addEventListener('input', e => {
+    const q = e.target.value.trim().toLowerCase();
+    if (!q) {
+      highlightId = null;
+      render();
+      return;
+    }
+    const match = allNodesData.find(x => (x.label || '').toLowerCase().includes(q));
+    if (match) {
+      highlightId = match.id;
+      render();
+      net.focus(match.id, { scale: 1.0, animation: { duration: 400 } });
+    } else {
+      highlightId = null;
+      render();
+    }
+  });
+</script>
+</body>
+</html>

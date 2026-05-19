@@ -53,3 +53,24 @@ privilegierten AD-Objekte und exportiert sie als interaktive HTML-Visualisierung
 | `-FromCache` | Lauf aus zuvor exportiertem Cache wiederherstellen |
 | `-CachePath` | Pfad zum Cache |
 | `-ExtraRootGroups` | Zusaetzliche Root-Gruppen (`SAMAccountName`) |
+
+## Repo-Struktur
+
+```
+Export-ADPrivilegeMap.ps1     # Einstiegspunkt (Orchestrierung, ~250 Zeilen)
+src/
+  Graph.ps1                   # Add-Node / Add-Edge
+  Walks.ps1                   # Expand-Members / -MemberOf / -UserMemberships / Add-PrimaryGroupMembers
+  Discovery.ps1               # A1 Root-Discovery + A3 SDProp-Waisen
+  Convergence.ps1             # A5 Konvergenz + Phase 3/4 (laterale Members/Parents)
+  Delegation.ps1              # Phase 5 Kerberos + Phase 6 ACL
+  Cache.ps1                   # JSON-Cache lesen/schreiben
+  Export-Html.ps1             # HTML-Render aus Template
+templates/
+  ad-priv-map.html.tmpl       # vis-network HTML-Template mit Platzhaltern
+```
+
+Die Helper unter `src/` werden vom Wrapper per Dot-Source geladen. Damit
+sieht jede Funktion den State (`$Nodes`, `$Edges`, Visited-Sets,
+`$MaxDepth`, ...) im aufrufenden Skript-Scope und kann ihn in-place
+mutieren - das Verhalten ist identisch zum Original-Monolithen.
