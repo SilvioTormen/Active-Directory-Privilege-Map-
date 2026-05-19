@@ -59,6 +59,27 @@ Die HTML-Visualisierung berechnet im Browser zusaetzlich:
 - **Refit-Button** in der Toolbar zum manuellen Zuruecksetzen der
   Ansicht.
 
+### Impact-/Konsolidierungs-Analyse
+
+Rechtsklick auf einen Gruppen-Knoten oeffnet ein Side-Panel, das die
+Folgen eines Loeschens / Umbaus zeigt:
+
+- **Direkte und transitive Mitglieder**, die ihre Mitgliedschafts-Kette
+  ueber diese Gruppe verlieren wuerden
+- **Parent-Gruppen** (direkt + transitiv), in denen die Gruppe Mitglied
+  ist - Tier-0-Treffer werden mit Badge markiert und ueber dem Panel als
+  Warnung eingeblendet
+- **Gewaehrte Rechte** (ACL-Edges + Kerberos-Delegationen), die mit dem
+  Loeschen wegfallen
+- **Konsolidierungs-Kandidaten**: andere Gruppen mit der groessten
+  Capability-Ueberlappung (gemeinsame Parents + gemeinsame
+  ACL/Kerberos-Targets), sortiert nach Overlap-Score - der erste
+  Kandidat ist meist eine sinnvolle Ziel-Gruppe fuer einen Merge
+- **CSV-Export** aller Sektionen als `impact-<gruppenname>.csv`,
+  abarbeitbar fuer den Migrations-/Loesch-Plan
+- **"Im Graph hervorheben"** schaltet in Tiefe-3-Ansicht um die Gruppe
+  und fokussiert die Kamera
+
 ## Voraussetzungen
 
 - Windows PowerShell 5.1 oder PowerShell 7+

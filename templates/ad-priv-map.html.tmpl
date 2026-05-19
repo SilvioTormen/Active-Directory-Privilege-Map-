@@ -50,6 +50,38 @@
   #search-results .item .tier0-badge { display:inline-block; padding:0 4px; margin-left:4px; font-size:9px; font-weight:600; color:#fff; background:#dc2626; border-radius:3px; }
   #search-results .item.active, #search-results .item:hover { background:#fef3c7; }
   #search-results .empty { padding:10px; color:#6b7280; font-style:italic; }
+  #impact-panel { position:absolute; top:140px; right:20px; background:#fff; border:1px solid #ddd; border-radius:6px; font-size:12px; box-shadow:0 2px 12px rgba(0,0,0,0.12); z-index:15; width:380px; max-height:calc(100vh - 170px); display:flex; flex-direction:column; }
+  #impact-panel.hidden { display:none; }
+  #impact-panel .head { padding:8px 12px; background:#1f2937; color:#fff; border-radius:6px 6px 0 0; display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  #impact-panel .head .title { font-weight:600; font-size:13px; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #impact-panel .head button { background:transparent; border:none; cursor:pointer; color:#fff; font-size:16px; padding:0 4px; }
+  #impact-panel .body { overflow-y:auto; padding:8px 0; }
+  #impact-panel .meta { padding:6px 12px; background:#f9fafb; border-bottom:1px solid #e5e7eb; font-size:11px; color:#4b5563; line-height:1.5; }
+  #impact-panel .meta strong { color:#1f2937; }
+  #impact-panel .warn { padding:6px 12px; background:#fee2e2; color:#991b1b; font-size:11px; font-weight:600; border-bottom:1px solid #fecaca; }
+  #impact-panel .sec { border-bottom:1px solid #f3f4f6; }
+  #impact-panel .sec-head { padding:7px 12px; cursor:pointer; font-weight:600; display:flex; justify-content:space-between; align-items:center; background:#f9fafb; user-select:none; }
+  #impact-panel .sec-head:hover { background:#f3f4f6; }
+  #impact-panel .sec-head .count { color:#6b7280; font-weight:400; font-size:11px; }
+  #impact-panel .sec-head .chev { color:#9ca3af; transition:transform 0.15s; font-size:10px; }
+  #impact-panel .sec.collapsed .sec-head .chev { transform:rotate(-90deg); }
+  #impact-panel .sec-body { padding:4px 0; }
+  #impact-panel .sec.collapsed .sec-body { display:none; }
+  #impact-panel .row { padding:4px 12px; display:flex; justify-content:space-between; gap:6px; cursor:pointer; }
+  #impact-panel .row:hover { background:#fef3c7; }
+  #impact-panel .row .lbl { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #impact-panel .row .lbl .badge-t0 { display:inline-block; padding:0 4px; margin-left:4px; font-size:9px; font-weight:600; color:#fff; background:#dc2626; border-radius:3px; }
+  #impact-panel .row .lbl .badge-d { display:inline-block; padding:0 4px; margin-left:4px; font-size:9px; font-weight:600; color:#fff; background:#ea580c; border-radius:3px; }
+  #impact-panel .row .meta-r { color:#6b7280; font-size:10px; flex:0 0 auto; align-self:center; }
+  #impact-panel .row.right-row .meta-r { color:#f97316; font-weight:600; }
+  #impact-panel .row.kerb-row .meta-r { color:#7c3aed; font-weight:600; }
+  #impact-panel .row.cand-row .meta-r { color:#16a34a; font-weight:700; }
+  #impact-panel .empty { padding:6px 14px; color:#9ca3af; font-style:italic; font-size:11px; }
+  #impact-panel .actions { padding:8px 12px; background:#f9fafb; border-top:1px solid #e5e7eb; border-radius:0 0 6px 6px; display:flex; gap:8px; }
+  #impact-panel .actions button { flex:1; padding:5px 10px; font-size:11px; cursor:pointer; border:1px solid #d1d5db; background:#fff; border-radius:4px; }
+  #impact-panel .actions button:hover { background:#f3f4f6; }
+  #impact-panel .actions button.primary { background:#1f2937; color:#fff; border-color:#1f2937; }
+  #impact-panel .actions button.primary:hover { background:#374151; }
 </style>
 </head>
 <body>
@@ -150,6 +182,20 @@
     <button id="paths-close" title="Schliessen">&times;</button>
   </div>
   <div class="body" id="paths-body"></div>
+</div>
+
+<div id="impact-panel" class="hidden">
+  <div class="head">
+    <span class="title" id="impact-title">Impact-Analyse</span>
+    <button id="impact-close" title="Schliessen">&times;</button>
+  </div>
+  <div class="meta" id="impact-meta"></div>
+  <div class="warn" id="impact-warn" style="display:none"></div>
+  <div class="body" id="impact-body"></div>
+  <div class="actions">
+    <button type="button" id="impact-highlight">Im Graph hervorheben</button>
+    <button type="button" id="impact-export" class="primary">CSV exportieren</button>
+  </div>
 </div>
 
 <div id="stats"></div>
@@ -874,6 +920,326 @@
       });
     });
   }
+
+  // ---- Impact-/Konsolidierungs-Analyse fuer Gruppen ----------------------
+  const edgesByFrom = {};
+  allEdgesData.forEach(e => {
+    if (!edgesByFrom[e.from]) edgesByFrom[e.from] = [];
+    edgesByFrom[e.from].push(e);
+  });
+  const nodeById = (() => {
+    const m = {};
+    allNodesData.forEach(n => { m[n.id] = n; });
+    return id => m[id];
+  })();
+
+  let impactCurrentId   = null;
+  let impactCurrentData = null;
+
+  function directCapabilitiesAsStrings(groupId) {
+    const caps = new Set();
+    (adjOut[groupId] || []).forEach(parentId => {
+      const pn = nodeById(parentId);
+      if (pn && pn.nodeType === 'Group') caps.add('parent:' + parentId);
+    });
+    (edgesByFrom[groupId] || []).forEach(e => {
+      if (e.edgeType === 'acl-right') caps.add('acl:' + e.to + ':' + (e.label || ''));
+      else if (e.edgeType === 'kerberos-constrained' || e.edgeType === 'kerberos-rbcd') {
+        caps.add('kerb:' + e.edgeType + ':' + e.to + ':' + (e.label || ''));
+      }
+    });
+    return caps;
+  }
+
+  function computeImpact(groupId) {
+    const node = nodeById(groupId);
+    if (!node) return null;
+
+    const directMembers = (adjIn[groupId] || [])
+      .map(id => nodeById(id))
+      .filter(n => n)
+      .sort((a, b) => (a.nodeType + (a.label || '')).localeCompare(b.nodeType + (b.label || '')));
+
+    const transMembers = new Set();
+    {
+      const q = [groupId];
+      const seen = new Set([groupId]);
+      while (q.length) {
+        const cur = q.shift();
+        (adjIn[cur] || []).forEach(n => {
+          if (seen.has(n)) return;
+          seen.add(n);
+          transMembers.add(n);
+          q.push(n);
+        });
+      }
+    }
+
+    const directParents = (adjOut[groupId] || [])
+      .map(id => nodeById(id))
+      .filter(n => n && n.nodeType === 'Group');
+
+    const transParents = new Set();
+    {
+      const q = [groupId];
+      const seen = new Set([groupId]);
+      while (q.length) {
+        const cur = q.shift();
+        (adjOut[cur] || []).forEach(n => {
+          if (seen.has(n)) return;
+          seen.add(n);
+          const nn = nodeById(n);
+          if (nn && nn.nodeType === 'Group') {
+            transParents.add(n);
+            q.push(n);
+          }
+        });
+      }
+    }
+
+    const rightsAcl  = [];
+    const rightsKerb = [];
+    (edgesByFrom[groupId] || []).forEach(e => {
+      if (e.edgeType === 'acl-right') {
+        rightsAcl.push({ target: nodeById(e.to), label: e.label || '' });
+      } else if (e.edgeType === 'kerberos-constrained' || e.edgeType === 'kerberos-rbcd') {
+        rightsKerb.push({ target: nodeById(e.to), label: e.label || '', edgeType: e.edgeType });
+      }
+    });
+
+    let tier0Parent = null;
+    transParents.forEach(pid => {
+      if (tier0Parent) return;
+      const pn = nodeById(pid);
+      if (pn && isTier0(pn)) tier0Parent = pn;
+    });
+
+    const capX = directCapabilitiesAsStrings(groupId);
+    let candidates = [];
+    if (capX.size > 0) {
+      allNodesData.forEach(g => {
+        if (g.id === groupId || g.nodeType !== 'Group') return;
+        const capG = directCapabilitiesAsStrings(g.id);
+        if (capG.size === 0) return;
+        let inter = 0;
+        capX.forEach(c => { if (capG.has(c)) inter++; });
+        if (inter === 0) return;
+        const overlap = inter / capX.size;
+        candidates.push({ node: g, overlap: overlap, intersect: inter, totalX: capX.size });
+      });
+      candidates.sort((a, b) => b.overlap - a.overlap);
+      candidates = candidates.slice(0, 5);
+    }
+
+    return {
+      group: node, directMembers, transMembers,
+      transMemberCount: transMembers.size,
+      directParents, transParents, rightsAcl, rightsKerb,
+      tier0Parent, candidates
+    };
+  }
+
+  function renderSection(id, title, count, innerHtml) {
+    return '<div class="sec" data-sec="' + id + '">' +
+           '<div class="sec-head"><span>' + escapeHtml(title) + ' <span class="count">(' + count + ')</span></span><span class="chev">&#9662;</span></div>' +
+           '<div class="sec-body">' + innerHtml + '</div></div>';
+  }
+
+  function rowForNode(n) {
+    if (!n) return '';
+    const t0   = isTier0(n) ? '<span class="badge-t0">T0</span>' : '';
+    const dist = (distanceToTier0[n.id] !== undefined && distanceToTier0[n.id] > 0)
+      ? '<span class="badge-d">d' + distanceToTier0[n.id] + '</span>' : '';
+    const meta = (n.nodeEnabled === false) ? 'disabled' : (n.nodeAdminCount ? 'AdminCount' : n.nodeType);
+    return '<div class="row" data-id="' + n.id + '">' +
+           '<span class="lbl">' + escapeHtml(n.label || '?') + ' ' + t0 + dist + '</span>' +
+           '<span class="meta-r">' + escapeHtml(meta) + '</span></div>';
+  }
+
+  function renderImpactPanel(d) {
+    const g = d.group;
+    document.getElementById('impact-title').textContent = 'Impact: ' + (g.label || '?');
+
+    const distLine = (distanceToTier0[g.id] !== undefined)
+      ? (' &middot; Tier-0-Distanz: <strong>' + distanceToTier0[g.id] + '</strong>')
+      : ' &middot; nicht mit Tier-0 verbunden';
+    const adminLine = g.nodeAdminCount ? ' &middot; <strong style="color:#dc2626">AdminCount=1</strong>' : '';
+    const dn = (g.title || '').split('DN: ').pop().split('\n')[0] || '';
+    document.getElementById('impact-meta').innerHTML =
+      'Type: <strong>' + escapeHtml(g.nodeType) + '</strong>' + adminLine + distLine +
+      '<br>DN: <span style="color:#6b7280">' + escapeHtml(dn) + '</span>';
+
+    const warn = document.getElementById('impact-warn');
+    if (d.tier0Parent) {
+      warn.style.display = '';
+      warn.innerHTML = '! Diese Gruppe vererbt indirekt Tier-0-Mitgliedschaft via ' + escapeHtml(d.tier0Parent.label || '?') + '.';
+    } else if (g.nodeAdminCount) {
+      warn.style.display = '';
+      warn.innerHTML = '! Diese Gruppe ist selbst Tier-0 (AdminCount=1). Loeschen mit hoechster Vorsicht.';
+    } else {
+      warn.style.display = 'none';
+    }
+
+    const body = document.getElementById('impact-body');
+    const parts = [];
+
+    parts.push(renderSection('mem-d', 'Direkte Mitglieder', d.directMembers.length,
+      d.directMembers.length === 0 ? '<div class="empty">Keine direkten Mitglieder.</div>'
+                                   : d.directMembers.map(rowForNode).join('')));
+
+    parts.push(renderSection('mem-t', 'Transitive Mitglieder', d.transMemberCount,
+      d.transMemberCount === 0 ? '<div class="empty">Keine transitiven Mitglieder.</div>'
+        : '<div class="empty">' + d.transMemberCount + ' Knoten verlieren beim Loeschen ihre Mitgliedschafts-Kette via dieser Gruppe (siehe CSV-Export).</div>'));
+
+    parts.push(renderSection('par-d', 'Direkte Parent-Gruppen', d.directParents.length,
+      d.directParents.length === 0 ? '<div class="empty">Keine Parent-Gruppen.</div>'
+                                   : d.directParents.map(rowForNode).join('')));
+
+    if (d.transParents.size > d.directParents.length) {
+      const direct = new Set(d.directParents.map(n => n.id));
+      const transOnly = [];
+      d.transParents.forEach(pid => { if (!direct.has(pid)) transOnly.push(nodeById(pid)); });
+      transOnly.sort((a, b) => (a.label || '').localeCompare(b.label || ''));
+      parts.push(renderSection('par-t', 'Transitiv erreichbare Parents', transOnly.length,
+        transOnly.map(rowForNode).join('')));
+    }
+
+    const rightsCount = d.rightsAcl.length + d.rightsKerb.length;
+    if (rightsCount > 0) {
+      let inner = '';
+      d.rightsAcl.forEach(r => {
+        const tgt = r.target; if (!tgt) return;
+        inner += '<div class="row right-row" data-id="' + tgt.id + '">' +
+                 '<span class="lbl">' + escapeHtml(tgt.label || '?') +
+                 ' <span style="color:#9ca3af">(' + escapeHtml(tgt.nodeType) + ')</span></span>' +
+                 '<span class="meta-r">' + escapeHtml(r.label) + '</span></div>';
+      });
+      d.rightsKerb.forEach(r => {
+        const tgt = r.target; if (!tgt) return;
+        inner += '<div class="row kerb-row" data-id="' + tgt.id + '">' +
+                 '<span class="lbl">' + escapeHtml(tgt.label || '?') +
+                 ' <span style="color:#9ca3af">(' + escapeHtml(tgt.nodeType) + ')</span></span>' +
+                 '<span class="meta-r">' + escapeHtml(r.edgeType.replace('kerberos-', 'Kerb-')) + '</span></div>';
+      });
+      parts.push(renderSection('rights', 'Gewaehrte Rechte (entfallen)', rightsCount, inner));
+    } else {
+      parts.push(renderSection('rights', 'Gewaehrte Rechte (entfallen)', 0,
+        '<div class="empty">Keine direkten ACL-/Kerberos-Edges.</div>'));
+    }
+
+    if (d.candidates.length > 0) {
+      const inner = d.candidates.map(c => {
+        const pct = Math.round(c.overlap * 100);
+        const t0b = isTier0(c.node) ? '<span class="badge-t0">T0</span>' : '';
+        return '<div class="row cand-row" data-id="' + c.node.id + '">' +
+               '<span class="lbl">' + escapeHtml(c.node.label || '?') + t0b +
+               ' <span style="color:#9ca3af;font-size:10px">&nbsp;' + c.intersect + '/' + c.totalX + ' Caps</span></span>' +
+               '<span class="meta-r">' + pct + '%</span></div>';
+      }).join('');
+      parts.push(renderSection('cand', 'Konsolidierungs-Kandidaten', d.candidates.length, inner));
+    } else {
+      parts.push(renderSection('cand', 'Konsolidierungs-Kandidaten', 0,
+        '<div class="empty">Keine Gruppe teilt direkte Capabilities mit dieser.</div>'));
+    }
+
+    body.innerHTML = parts.join('');
+
+    body.querySelectorAll('.sec-head').forEach(h => {
+      h.addEventListener('click', () => h.parentElement.classList.toggle('collapsed'));
+    });
+    body.querySelectorAll('.row[data-id]').forEach(r => {
+      r.addEventListener('click', () => {
+        const id = r.getAttribute('data-id');
+        highlightId = id;
+        render();
+        focusAdaptive(id, currentVisible);
+      });
+    });
+  }
+
+  function openImpactPanel(groupId) {
+    const data = computeImpact(groupId);
+    if (!data) return;
+    impactCurrentId   = groupId;
+    impactCurrentData = data;
+    document.getElementById('impact-panel').classList.remove('hidden');
+    renderImpactPanel(data);
+  }
+
+  function closeImpactPanel() {
+    document.getElementById('impact-panel').classList.add('hidden');
+    impactCurrentId   = null;
+    impactCurrentData = null;
+  }
+
+  function csvEscape(s) {
+    if (s === null || s === undefined) return '';
+    const str = String(s);
+    if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+      return '"' + str.replace(/"/g, '""') + '"';
+    }
+    return str;
+  }
+
+  function exportImpactCsv() {
+    if (!impactCurrentData) return;
+    const d = impactCurrentData;
+    const lines = ['Section,Id,Label,Type,Detail'];
+    const push = (sec, n, detail) => {
+      if (!n) return;
+      lines.push([sec, n.id, n.label, n.nodeType, detail || ''].map(csvEscape).join(','));
+    };
+    push('Group', d.group, 'AdminCount=' + (d.group.nodeAdminCount ? 'yes' : 'no') +
+                          (distanceToTier0[d.group.id] !== undefined ? ';Tier0Distance=' + distanceToTier0[d.group.id] : ''));
+    if (d.tier0Parent) {
+      lines.push(['Warning', d.tier0Parent.id, d.tier0Parent.label, d.tier0Parent.nodeType, 'TransitiveTier0Parent'].map(csvEscape).join(','));
+    }
+    d.directMembers.forEach(n => push('DirectMember', n, n.nodeEnabled === false ? 'disabled' : 'enabled'));
+    d.transMembers.forEach(id => { const n = nodeById(id); if (n) push('TransitiveMember', n, ''); });
+    d.directParents.forEach(n => push('DirectParent', n,
+      (n.nodeAdminCount ? 'AdminCount=1;' : '') +
+      (distanceToTier0[n.id] !== undefined ? 'Tier0Distance=' + distanceToTier0[n.id] : '')));
+    d.transParents.forEach(pid => {
+      const n = nodeById(pid); if (!n) return;
+      push('TransitiveParent', n,
+        (n.nodeAdminCount ? 'AdminCount=1;' : '') +
+        (distanceToTier0[n.id] !== undefined ? 'Tier0Distance=' + distanceToTier0[n.id] : ''));
+    });
+    d.rightsAcl.forEach(r => push('AclRight', r.target, 'Right=' + r.label));
+    d.rightsKerb.forEach(r => push('KerberosRight', r.target, 'Type=' + r.edgeType + ';Label=' + r.label));
+    d.candidates.forEach(c => push('ConsolidationCandidate', c.node,
+      'OverlapPct=' + Math.round(c.overlap * 100) + ';Intersect=' + c.intersect + '/' + c.totalX));
+
+    const filename = 'impact-' + ((d.group.label || 'group').replace(/[^a-zA-Z0-9._-]+/g, '_')) + '.csv';
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 300);
+  }
+
+  net.on('oncontext', params => {
+    params.event.preventDefault();
+    const id = net.getNodeAt(params.pointer.DOM);
+    if (!id) return;
+    const n = nodeById(id);
+    if (!n || n.nodeType !== 'Group') return;
+    openImpactPanel(id);
+  });
+
+  document.getElementById('impact-close').addEventListener('click', closeImpactPanel);
+  document.getElementById('impact-export').addEventListener('click', exportImpactCsv);
+  document.getElementById('impact-highlight').addEventListener('click', () => {
+    if (!impactCurrentId) return;
+    highlightId = impactCurrentId;
+    state.displayMode = 'depth';
+    document.getElementById('display-mode').value = 'depth';
+    state.depth = 3;
+    document.getElementById('depth-select').value = '3';
+    render();
+    focusAdaptive(impactCurrentId, currentVisible);
+  });
 
   render();
 
