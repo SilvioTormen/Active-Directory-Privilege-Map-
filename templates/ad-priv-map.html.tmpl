@@ -1361,11 +1361,13 @@
   });
 
   // Transitive Mitgliederzahl ueber adjInMem (nur Membership-Edges).
+  // Head-Pointer-BFS statt q.shift() (O(1) statt O(n) pro Step).
   function transitiveMemberCount(groupId) {
     const seen = new Set();
     const q = [groupId];
-    while (q.length) {
-      const cur = q.shift();
+    let head = 0;
+    while (head < q.length) {
+      const cur = q[head++];
       (adjInMem[cur] || []).forEach(n => {
         if (seen.has(n)) return;
         seen.add(n);
@@ -1385,6 +1387,9 @@
   // Cycle-Detection im Membership-Graph (nur 'member'-Edges, nur Group-Nodes).
   // Liefert Liste von Cycles als Arrays von Node-IDs (ohne den schliessenden Knoten).
   // Capped auf MAX_CYCLES, weil dichte Graphen viele kleine Cycles haben koennen.
+  // Iterativer DFS (kein Rekursionsrisiko bei tiefen Group-Ketten).
+  // Jedes Stack-Frame haelt den aktuellen Node + seine Nachbar-Liste + den Iterations-Index.
+  // path[] spiegelt die aktive Stack-Sequenz fuer die Cycle-Erkennung via indexOf.
   function findCycles() {
     const cycles = [];
     const MAX_CYCLES   = 30;
@@ -1392,21 +1397,29 @@
     const groupIds = allNodesData.filter(n => n.nodeType === 'Group').map(n => n.id);
     const dfsState = {};   // 0=unseen, 1=on-stack, 2=done
     groupIds.forEach(id => { dfsState[id] = 0; });
-    const path = [];
-    const cycleKeys = new Set();   // dedup identischer Cycles (rotiert/anders gestartet)
+    const cycleKeys = new Set();
 
-    function dfs(node) {
-      if (cycles.length >= MAX_CYCLES) return;
-      dfsState[node] = 1;
-      path.push(node);
-      const out = adjOutMem[node] || [];
-      for (let i = 0; i < out.length; i++) {
-        if (cycles.length >= MAX_CYCLES) break;
-        const nx = out[i];
+    for (let s = 0; s < groupIds.length && cycles.length < MAX_CYCLES; s++) {
+      const startId = groupIds[s];
+      if (dfsState[startId] !== 0) continue;
+
+      const stack = [{ id: startId, neighbors: adjOutMem[startId] || [], idx: 0 }];
+      const path  = [startId];
+      dfsState[startId] = 1;
+
+      while (stack.length > 0 && cycles.length < MAX_CYCLES) {
+        const top = stack[stack.length - 1];
+        if (top.idx >= top.neighbors.length) {
+          dfsState[top.id] = 2;
+          stack.pop();
+          path.pop();
+          continue;
+        }
+        const nx = top.neighbors[top.idx++];
         const nNode = nodeById(nx);
         if (!nNode || nNode.nodeType !== 'Group') continue;
         if (dfsState[nx] === 1) {
-          // Cycle entdeckt
+          // Cycle entdeckt: Subarray vom Vorkommen in path bis zum Ende
           const startIdx = path.indexOf(nx);
           if (startIdx >= 0) {
             const cyc = path.slice(startIdx);
@@ -1419,16 +1432,11 @@
             }
           }
         } else if (dfsState[nx] === 0) {
-          dfs(nx);
+          dfsState[nx] = 1;
+          path.push(nx);
+          stack.push({ id: nx, neighbors: adjOutMem[nx] || [], idx: 0 });
         }
       }
-      path.pop();
-      dfsState[node] = 2;
-    }
-
-    for (let i = 0; i < groupIds.length; i++) {
-      if (cycles.length >= MAX_CYCLES) break;
-      if (dfsState[groupIds[i]] === 0) dfs(groupIds[i]);
     }
     return cycles;
   }
@@ -1449,7 +1457,11 @@
       A.push({ type: 'A', primary: n.id, target: [n.id], distance: d,
                detail: 'Distanz ' + d + ' zu Tier-0, keine AdminCount-Markierung, Name passt nicht zu Admin-Konventionen' });
     });
-    A.sort((a, b) => a.distance - b.distance || (nodeById(a.primary).label || '').localeCompare(nodeById(b.primary).label || ''));
+    A.sort((a, b) => {
+      if (a.distance !== b.distance) return a.distance - b.distance;
+      const an = nodeById(a.primary), bn = nodeById(b.primary);
+      return ((an && an.label) || '').localeCompare((bn && bn.label) || '');
+    });
 
     // ---- B: Generische Gruppe ist Member einer Tier-0-Gruppe --------------
     // Fuer jede Tier-0-Gruppe (AdminCount=1 oder IsRoot): pruefe direkte Mitglieder
@@ -1469,7 +1481,11 @@
                  detail: '"' + (m.label || '?') + '" (' + cnt + ' direkte Members) ist Member von Tier-0-Gruppe "' + (parent.label || '?') + '"' });
       });
     });
-    B.sort((a, b) => b.memberCount - a.memberCount);
+    B.sort((a, b) => {
+      if (a.memberCount !== b.memberCount) return b.memberCount - a.memberCount;
+      const an = nodeById(a.primary), bn = nodeById(b.primary);
+      return ((an && an.label) || '').localeCompare((bn && bn.label) || '');
+    });
 
     // ---- C: Auffaellig grosse Tier-0-Gruppe -------------------------------
     allNodesData.forEach(n => {
@@ -1512,7 +1528,10 @@
       F.push({ type: 'F', primary: n.id, target: [n.id],
                detail: 'Deaktivierter Account mit ' + (n.nodeAdminCount ? 'AdminCount=1' : 'SDProp-Orphan') + ' - kann reaktiviert werden und ist sofort wieder privilegiert' });
     });
-    F.sort((a, b) => (nodeById(a.primary).label || '').localeCompare(nodeById(b.primary).label || ''));
+    F.sort((a, b) => {
+      const an = nodeById(a.primary), bn = nodeById(b.primary);
+      return ((an && an.label) || '').localeCompare((bn && bn.label) || '');
+    });
 
     // ---- G: ForeignSecurityPrincipal in Tier-0 ----------------------------
     allNodesData.forEach(n => {
@@ -1561,7 +1580,7 @@
     { key: 'E', title: 'Zirkulaere Gruppen-Mitgliedschaft',
       why: 'Group A -> B -> ... -> A. AD erlaubt das in seltenen Faellen transitiv - praktisch immer ein Konfigurations-Bug.',
       meta: f => f.cycleLen + '-Cycle' },
-    { key: 'F', title: 'Deaktivierter Account in Tier-0',
+    { key: 'F', title: 'Deaktivierter privilegierter User',
       why: 'Disabled User mit AdminCount=1 oder SDProp-Orphan. Beim Reaktivieren sofort wieder Admin. Aufraeumen!',
       meta: () => 'disabled' },
     { key: 'G', title: 'ForeignSecurityPrincipal in Tier-0',
@@ -1662,10 +1681,14 @@
       render();
       focusAdaptive(item.primary, currentVisible);
     } else if (t === 'F') {
+      // F-User sind selbst Tier-0 (Distanz=0) -> attack-surface waere leer.
+      // Stattdessen depth=2: zeigt den User + seine direkten Tier-0-Parents.
       customHighlightSet = null;
       highlightId = item.primary;
-      state.displayMode = 'attack-surface';
-      document.getElementById('display-mode').value = 'attack-surface';
+      state.displayMode = 'depth';
+      document.getElementById('display-mode').value = 'depth';
+      state.depth = 2;
+      document.getElementById('depth-select').value = '2';
       render();
       focusAdaptive(item.primary, currentVisible);
     } else {
@@ -1731,28 +1754,46 @@
   document.getElementById('findings-refresh').addEventListener('click', () => {
     Object.keys(_transMemCache).forEach(k => delete _transMemCache[k]);
     findingsCache = null;
+    // Stale Highlight aus einem vorher selektierten Finding wegraeumen.
+    customHighlightSet = null;
+    highlightId = null;
     renderFindings();
     refreshFindingsBadge();
+    render();
   });
   document.getElementById('findings-export').addEventListener('click', exportFindingsCsv);
 
   // Findings beim Laden einmal berechnen, damit der Badge im Toolbar gefuellt ist.
   refreshFindingsBadge();
 
-  // toggle-paths-btn soll Findings-Panel schliessen, falls offen (gleicher Slot)
+  // toggle-paths-btn soll Findings-Panel schliessen (gleicher Slot) und einen
+  // evtl. aktiven Finding-Highlight wegraeumen, damit der Graph beim Wechsel
+  // in den Top-Pfade-Kontext nicht stale Highlights zeigt.
   document.getElementById('toggle-paths-btn').addEventListener('click', () => {
     document.getElementById('findings-panel').classList.add('hidden');
+    if (customHighlightSet !== null) {
+      customHighlightSet = null;
+      render();
+    }
   });
 
   render();
 
-  document.getElementById('display-mode').addEventListener('change', e => { customHighlightSet = null; state.displayMode = e.target.value; render(); });
+  // Helfer: alle Handler, die den View aktiv aendern, sollen einen evtl. aktiven
+  // Findings-Highlight loswerden, damit Filter-/Depth-Aenderungen nicht von einem
+  // "force-visible-via-customHighlight" verfaelscht werden (User wuerde sonst
+  // Knoten sehen, die der Filter eigentlich versteckt).
+  function clearFindingHighlight() { customHighlightSet = null; }
+
+  document.getElementById('display-mode').addEventListener('change', e => { clearFindingHighlight(); state.displayMode = e.target.value; render(); });
   document.getElementById('depth-select').addEventListener('change', e => {
+    clearFindingHighlight();
     const v = parseInt(e.target.value, 10);
     state.depth = isNaN(v) ? 2 : v;
     render();
   });
   document.getElementById('max-dist-select').addEventListener('change', e => {
+    clearFindingHighlight();
     const v = parseInt(e.target.value, 10);
     state.maxDist = isNaN(v) ? 3 : v;
     render();
@@ -1773,16 +1814,17 @@
     }
   });
 
-  document.getElementById('f-tier0').addEventListener('change', e => { state.tier0Only = e.target.checked; render(); });
-  document.getElementById('f-active').addEventListener('change', e => { state.activeOnly = e.target.checked; render(); });
-  document.getElementById('f-hidecomp').addEventListener('change', e => { state.hideComps = e.target.checked; render(); });
-  document.getElementById('f-hidefsp').addEventListener('change', e => { state.hideFsp = e.target.checked; render(); });
-  document.getElementById('f-hidelateral').addEventListener('change', e => { state.hideLateral = e.target.checked; render(); });
-  document.getElementById('f-hidelatmem').addEventListener('change', e => { state.hideLatMem = e.target.checked; render(); });
-  document.getElementById('f-hidelatpar').addEventListener('change', e => { state.hideLatPar = e.target.checked; render(); });
-  document.getElementById('f-hidekerb').addEventListener('change', e => { state.hideKerb = e.target.checked; render(); });
-  document.getElementById('f-hideacl').addEventListener('change', e => { state.hideAcl = e.target.checked; render(); });
+  document.getElementById('f-tier0').addEventListener('change', e => { clearFindingHighlight(); state.tier0Only = e.target.checked; render(); });
+  document.getElementById('f-active').addEventListener('change', e => { clearFindingHighlight(); state.activeOnly = e.target.checked; render(); });
+  document.getElementById('f-hidecomp').addEventListener('change', e => { clearFindingHighlight(); state.hideComps = e.target.checked; render(); });
+  document.getElementById('f-hidefsp').addEventListener('change', e => { clearFindingHighlight(); state.hideFsp = e.target.checked; render(); });
+  document.getElementById('f-hidelateral').addEventListener('change', e => { clearFindingHighlight(); state.hideLateral = e.target.checked; render(); });
+  document.getElementById('f-hidelatmem').addEventListener('change', e => { clearFindingHighlight(); state.hideLatMem = e.target.checked; render(); });
+  document.getElementById('f-hidelatpar').addEventListener('change', e => { clearFindingHighlight(); state.hideLatPar = e.target.checked; render(); });
+  document.getElementById('f-hidekerb').addEventListener('change', e => { clearFindingHighlight(); state.hideKerb = e.target.checked; render(); });
+  document.getElementById('f-hideacl').addEventListener('change', e => { clearFindingHighlight(); state.hideAcl = e.target.checked; render(); });
   document.getElementById('f-minmem').addEventListener('change', e => {
+    clearFindingHighlight();
     const v = parseInt(e.target.value, 10);
     state.minMembers = isNaN(v) || v < 0 ? 0 : v;
     render();
