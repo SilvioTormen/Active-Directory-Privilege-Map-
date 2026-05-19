@@ -16,6 +16,24 @@ privilegierten AD-Objekte und exportiert sie als interaktive HTML-Visualisierung
   Min-Memberships, Suche)
 - **C10** `Write-Progress` fuer alle Schleifen
 
+### Attack-Path-Computation (im HTML)
+
+Die HTML-Visualisierung berechnet im Browser zusaetzlich:
+
+- **Distanz zu Tier-0 pro Node** via Multi-Source-BFS von allen Tier-0-Nodes
+  in Inbound-Richtung. Damit weiss jeder Node, wieviele Hops er von
+  Domain-Admin-Aequivalent entfernt ist.
+- **Display-Modus "Tier-0-Risiko (Distanz)"**: zeigt nur Nodes innerhalb
+  einer Max-Distanz und faerbt deren Outline nach Distanz (1 rot, 2
+  orange, 3 gelb, 4+ gruen). Mit Selektion wird der kuerzeste Pfad zu
+  Tier-0 hervorgehoben (alle gleichlangen Pfade als Layer).
+- **Display-Modus "Owned-Cone (Selektion)"**: zeigt die outbound
+  transitive Huelle ab einem ausgewaehlten Node - also alle Objekte, die
+  dieser Node direkt oder indirekt uebernehmen koennte.
+- **Top-Pfade-Panel**: Liste der Nicht-Tier-0-Nodes mit der kuerzesten
+  Distanz zu Tier-0, Klick fokussiert den Node + schaltet in den
+  Risiko-Modus.
+
 ## Voraussetzungen
 
 - Windows PowerShell 5.1 oder PowerShell 7+

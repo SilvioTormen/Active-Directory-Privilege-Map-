@@ -23,6 +23,22 @@
   #loading { position:fixed; top:130px; left:0; right:0; bottom:0; background:rgba(255,255,255,0.95); display:flex; align-items:center; justify-content:center; flex-direction:column; z-index:100; font-size:14px; color:#1f2937; }
   #loading progress { width:300px; height:14px; margin:10px 0; }
   #loading-text { font-size:12px; color:#6b7280; margin-top:4px; }
+  #paths-panel { position:absolute; top:140px; left:20px; background:#fff; border:1px solid #ddd; border-radius:6px; font-size:12px; box-shadow:0 2px 8px rgba(0,0,0,0.08); z-index:10; width:330px; max-height:calc(100vh - 170px); display:flex; flex-direction:column; }
+  #paths-panel.hidden { display:none; }
+  #paths-panel .head { padding:8px 12px; background:#f3f4f6; border-bottom:1px solid #d1d5db; border-radius:6px 6px 0 0; display:flex; justify-content:space-between; align-items:center; font-weight:600; }
+  #paths-panel .head button { background:transparent; border:none; cursor:pointer; font-size:14px; color:#6b7280; }
+  #paths-panel .body { overflow-y:auto; padding:6px 0; }
+  #paths-panel .row { padding:6px 12px; cursor:pointer; border-bottom:1px solid #f3f4f6; display:flex; justify-content:space-between; gap:8px; }
+  #paths-panel .row:hover { background:#fef3c7; }
+  #paths-panel .row .lbl { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #paths-panel .row .lbl .type { font-size:10px; color:#6b7280; margin-left:4px; }
+  #paths-panel .row .dist { font-weight:600; color:#dc2626; flex:0 0 auto; }
+  #paths-panel .row .dist[data-d="1"] { color:#dc2626; }
+  #paths-panel .row .dist[data-d="2"] { color:#ea580c; }
+  #paths-panel .row .dist[data-d="3"] { color:#ca8a04; }
+  #paths-panel .row .dist[data-d="4"] { color:#65a30d; }
+  #paths-panel .empty { padding:12px; color:#6b7280; font-style:italic; }
+  .legend .dist-row { display:flex; align-items:center; gap:6px; }
 </style>
 </head>
 <body>
@@ -37,6 +53,8 @@
       <select id="display-mode">
         <option value="depth" selected>Auswahl + Nachbarn</option>
         <option value="all">Alle Nodes</option>
+        <option value="attack-surface">Tier-0-Risiko (Distanz)</option>
+        <option value="owned-cone">Owned-Cone (Selektion)</option>
       </select>
     </label>
     <label>Tiefe:
@@ -49,6 +67,17 @@
         <option value="999">Alle</option>
       </select>
     </label>
+    <label>Max-Distanz:
+      <select id="max-dist-select">
+        <option value="1">1</option>
+        <option value="2">2</option>
+        <option value="3" selected>3</option>
+        <option value="4">4</option>
+        <option value="6">6</option>
+        <option value="999">alle</option>
+      </select>
+    </label>
+    <button id="toggle-paths-btn" type="button" style="padding:4px 10px; cursor:pointer;">Top-Pfade</button>
   </div>
   <div class="grp">
     <label>Layout:
@@ -94,6 +123,21 @@
   <div><span class="swatch" style="background:#a855f7"></span>Foreign SP</div>
   <div><span class="swatch" style="background:#64748b"></span>OU</div>
   <div class="hint">Pfeilrichtung A -&gt; B = "A ist Mitglied von B"<br>Klick auf Node oder Eingabe im Suchfeld = Pfad markieren<br><br>Edge-Farben:<br><span style="color:#555;font-weight:bold">grau</span> = Mitgliedschaft<br><span style="color:#7c3aed;font-weight:bold">lila</span> = Kerberos-Delegation<br><span style="color:#f97316;font-weight:bold">orange</span> = ACL-Recht</div>
+  <div class="hint" id="dist-legend" style="display:none">
+    <strong>Tier-0-Distanz:</strong><br>
+    <div class="dist-row"><span class="swatch" style="background:#fff;border:3px solid #dc2626"></span>1 Hop bis Tier-0</div>
+    <div class="dist-row"><span class="swatch" style="background:#fff;border:3px solid #ea580c"></span>2 Hops</div>
+    <div class="dist-row"><span class="swatch" style="background:#fff;border:3px solid #ca8a04"></span>3 Hops</div>
+    <div class="dist-row"><span class="swatch" style="background:#fff;border:3px solid #65a30d"></span>4+ Hops</div>
+  </div>
+</div>
+
+<div id="paths-panel" class="hidden">
+  <div class="head">
+    <span>Top Attack-Pfade zu Tier-0</span>
+    <button id="paths-close" title="Schliessen">&times;</button>
+  </div>
+  <div class="body" id="paths-body"></div>
 </div>
 
 <div id="stats"></div>
@@ -134,6 +178,7 @@
   const state = {
     displayMode: 'depth',
     depth:       2,
+    maxDist:     3,
     tier0Only:   false,
     activeOnly:  false,
     hideComps:   false,
@@ -152,10 +197,82 @@
   const DIMMED_BG       = '#e5e7eb';   // hellgrau fuer ausgeblendete Nodes
   const DIMMED_FONT     = '#9ca3af';
 
+  // Outline-Farben nach Distanz zu Tier-0 (1=naechste, 4+=ferner)
+  const DIST_COLORS = { 1: '#dc2626', 2: '#ea580c', 3: '#ca8a04', 4: '#65a30d' };
+  function distColor(d) { return DIST_COLORS[d] || DIST_COLORS[4]; }
+
   function isTier0(node) {
     if (node.nodeType === 'Group') return node.nodeIsRoot || node.nodeAdminCount;
     if (node.nodeType === 'User')  return node.nodeAdminCount || node.nodeIsOrphan;
     return false;
+  }
+
+  // ---- Attack-Path-Precomputation ----------------------------------------
+  // distanceToTier0[id] = Anzahl Hops in Outbound-Richtung bis zu einem Tier-0-Node.
+  // Wird per Multi-Source-BFS von allen Tier-0-Nodes in Inbound-Richtung berechnet.
+  const tier0Ids = new Set();
+  allNodesData.forEach(n => { if (isTier0(n)) tier0Ids.add(n.id); });
+
+  const distanceToTier0 = {};
+  (function computeDistances() {
+    const queue = [];
+    tier0Ids.forEach(id => { distanceToTier0[id] = 0; queue.push(id); });
+    while (queue.length) {
+      const cur = queue.shift();
+      const d   = distanceToTier0[cur];
+      (adjIn[cur] || []).forEach(n => {
+        if (distanceToTier0[n] === undefined) {
+          distanceToTier0[n] = d + 1;
+          queue.push(n);
+        }
+      });
+    }
+  })();
+
+  // Set aller Nodes, die auf einem kuerzesten Pfad von startId zu *einem* Tier-0-Node liegen.
+  // Voraussetzung: distanceToTier0[startId] ist definiert.
+  function shortestPathsToTier0(startId) {
+    if (distanceToTier0[startId] === undefined) return new Set();
+    const result = new Set([startId]);
+    const queue = [startId];
+    while (queue.length) {
+      const cur     = queue.shift();
+      const curDist = distanceToTier0[cur];
+      if (curDist === 0) continue;
+      (adjOut[cur] || []).forEach(n => {
+        if (distanceToTier0[n] === curDist - 1 && !result.has(n)) {
+          result.add(n);
+          queue.push(n);
+        }
+      });
+    }
+    return result;
+  }
+
+  // Outbound transitive Huelle ab startId (= alles, was startId direkt/indirekt uebernehmen kann).
+  function ownedConeFrom(startId) {
+    const set = new Set([startId]);
+    const queue = [startId];
+    while (queue.length) {
+      const cur = queue.shift();
+      (adjOut[cur] || []).forEach(n => {
+        if (!set.has(n)) { set.add(n); queue.push(n); }
+      });
+    }
+    return set;
+  }
+
+  // Top-N nicht-Tier-0-Nodes nach Distanz aufsteigend (innerhalb maxDist).
+  function topAttackPaths(n, maxDist) {
+    return allNodesData
+      .filter(node => !tier0Ids.has(node.id) && distanceToTier0[node.id] !== undefined && distanceToTier0[node.id] <= maxDist)
+      .sort((a, b) => {
+        const da = distanceToTier0[a.id];
+        const db = distanceToTier0[b.id];
+        if (da !== db) return da - db;
+        return (a.label || '').localeCompare(b.label || '');
+      })
+      .slice(0, n);
   }
 
   function nodeVisible(node) {
@@ -285,27 +402,48 @@
   function render() {
     // Schritt 1: Basis-Sichtbarkeit nach Display-Modus
     let baseSet;
+    let attackPathSet = null;     // Pfad-Subset im attack-surface-Modus mit Selektion
+    let ownedConeSet  = null;     // Outbound-Huelle im owned-cone-Modus
+    let distColored   = false;    // Faerbung nach Distanz aktiv
+
     if (state.displayMode === 'depth') {
       if (highlightId !== null) {
         baseSet = findReachableWithDepth(highlightId, state.depth);
       } else {
-        // Default-Einstieg: Tier-0-Kern (Roots + AdminCount=1 + Waisen)
+        baseSet = new Set();
+        allNodesData.forEach(n => { if (isTier0(n)) baseSet.add(n.id); });
+      }
+    } else if (state.displayMode === 'attack-surface') {
+      if (highlightId !== null && distanceToTier0[highlightId] !== undefined) {
+        attackPathSet = shortestPathsToTier0(highlightId);
+        baseSet = new Set(attackPathSet);
+      } else {
         baseSet = new Set();
         allNodesData.forEach(n => {
-          if (isTier0(n)) baseSet.add(n.id);
+          const d = distanceToTier0[n.id];
+          if (d !== undefined && d <= state.maxDist) baseSet.add(n.id);
         });
+      }
+      distColored = (attackPathSet === null);
+    } else if (state.displayMode === 'owned-cone') {
+      if (highlightId !== null) {
+        ownedConeSet = ownedConeFrom(highlightId);
+        baseSet = new Set(ownedConeSet);
+      } else {
+        // Ohne Selektion zeigen wir nur Tier-0 als Anker und einen Hinweis im stats-Text.
+        baseSet = new Set();
+        allNodesData.forEach(n => { if (isTier0(n)) baseSet.add(n.id); });
       }
     } else {
       baseSet = new Set(allNodesData.map(n => n.id));
     }
 
-    // Schritt 2: Zusaetzliche Filter anwenden
     const visibleSet = new Set();
     allNodesData.forEach(n => {
       if (baseSet.has(n.id) && nodeVisible(n)) visibleSet.add(n.id);
     });
 
-    // Schritt 3: pathSet (rote Hervorhebung) nur im "all"-Modus, sonst kein Sinn
+    // pathSet (rote Hervorhebung) im "all"-Modus mit Selektion
     const pathSet = (state.displayMode === 'all' && highlightId !== null && visibleSet.has(highlightId))
       ? findReachable(highlightId, visibleSet)
       : null;
@@ -315,6 +453,7 @@
       const u = { id: n.id, hidden: !isVis };
       if (isVis) {
         if (pathSet) {
+          // 'all'-Modus mit Pfad
           if (pathSet.has(n.id)) {
             u.color = { background: n._origColor, border: HIGHLIGHT_COLOR };
             u.borderWidth = (n.id === highlightId) ? 6 : 3;
@@ -324,8 +463,29 @@
             u.borderWidth = 1;
             u.font = { color: DIMMED_FONT, size: 12, face: 'Segoe UI' };
           }
+        } else if (attackPathSet) {
+          // attack-surface mit Selektion: kuerzester Pfad zu Tier-0 rot
+          u.color = { background: n._origColor, border: HIGHLIGHT_COLOR };
+          u.borderWidth = (n.id === highlightId) ? 6 : 3;
+          u.font = { color: '#000', size: 12, face: 'Segoe UI' };
+        } else if (distColored) {
+          // attack-surface ohne Selektion: Outline nach Distanz
+          const d = distanceToTier0[n.id];
+          const border = (d === 0) ? HIGHLIGHT_COLOR : distColor(d);
+          u.color = { background: n._origColor, border: border };
+          u.borderWidth = (d === 0) ? 3 : 4;
+          u.font = { color: '#000', size: 12, face: 'Segoe UI' };
+        } else if (ownedConeSet) {
+          // owned-cone: Highlight-Node fett, Rest mit oranger Outline (markiert "in Besitz")
+          if (n.id === highlightId) {
+            u.color = { background: n._origColor, border: HIGHLIGHT_COLOR };
+            u.borderWidth = 6;
+          } else {
+            u.color = { background: n._origColor, border: '#ea580c' };
+            u.borderWidth = 3;
+          }
+          u.font = { color: '#000', size: 12, face: 'Segoe UI' };
         } else if (state.displayMode === 'depth' && n.id === highlightId) {
-          // Im depth-Mode: das ausgewaehlte Zentrum rot markieren
           u.color = { background: n._origColor, border: HIGHLIGHT_COLOR };
           u.borderWidth = 6;
           u.font = { color: '#000', size: 12, face: 'Segoe UI' };
@@ -339,7 +499,6 @@
     });
 
     const edgeUpdates = allEdgesData.map(e => {
-      // Edge-Typ-Filter
       const isKerb = (e.edgeType === 'kerberos-constrained' || e.edgeType === 'kerberos-rbcd');
       const isAcl  = (e.edgeType === 'acl-right');
       let typeAllowed = true;
@@ -349,7 +508,6 @@
       const isVis = typeAllowed && visibleSet.has(e.from) && visibleSet.has(e.to);
       const u = { id: e.id, hidden: !isVis };
       if (isVis) {
-        // Basis-Farbe nach Edge-Typ
         let baseColor = NORMAL_EDGE;
         let baseWidth = 1;
         if (isKerb)     { baseColor = '#7c3aed'; baseWidth = 2; }
@@ -361,6 +519,30 @@
             u.width = 3;
           } else {
             u.color = { color: DIMMED_BG, opacity: 0.2 };
+            u.width = 1;
+          }
+        } else if (attackPathSet) {
+          // Edge gehoert zum kuerzesten Pfad iff Distanzen fallen um 1
+          const df = distanceToTier0[e.from];
+          const dt = distanceToTier0[e.to];
+          if (attackPathSet.has(e.from) && attackPathSet.has(e.to) && df === dt + 1) {
+            u.color = { color: HIGHLIGHT_COLOR, highlight: HIGHLIGHT_COLOR };
+            u.width = 3;
+            if (e.label) u.label = e.label;
+          } else {
+            u.color = { color: DIMMED_BG, opacity: 0.2 };
+            u.width = 1;
+          }
+        } else if (distColored) {
+          // attack-surface ohne Selektion: Edges nach From-Distanz einfaerben,
+          // wenn sie tatsaechlich naeher Richtung Tier-0 fuehren.
+          const df = distanceToTier0[e.from];
+          const dt = distanceToTier0[e.to];
+          if (df !== undefined && dt !== undefined && df === dt + 1) {
+            u.color = { color: distColor(df) };
+            u.width = 2;
+          } else {
+            u.color = { color: NORMAL_EDGE, opacity: 0.4 };
             u.width = 1;
           }
         } else {
@@ -384,12 +566,68 @@
       } else {
         statsText += ' | Tier-0-Uebersicht - Knoten anklicken oder suchen, um zu erkunden';
       }
+    } else if (state.displayMode === 'attack-surface') {
+      if (attackPathSet && highlightId !== null) {
+        const hl = allNodesData.find(x => x.id === highlightId);
+        const d  = distanceToTier0[highlightId];
+        statsText += ' | Pfad: ' + (hl ? hl.label : '?') + ' -> Tier-0 (' + d + ' Hops, ' + attackPathSet.size + ' Knoten im Layer)';
+      } else {
+        const mLabel = (state.maxDist >= 999) ? 'unbegrenzt' : ('<=' + state.maxDist);
+        statsText += ' | Tier-0-Risiko, Max-Distanz ' + mLabel;
+      }
+    } else if (state.displayMode === 'owned-cone') {
+      if (ownedConeSet && highlightId !== null) {
+        const hl = allNodesData.find(x => x.id === highlightId);
+        statsText += ' | Owned-Cone von ' + (hl ? hl.label : '?') + ' (' + ownedConeSet.size + ' uebernehmbar)';
+      } else {
+        statsText += ' | Owned-Cone: bitte einen Node anklicken oder suchen';
+      }
     } else if (pathSet) {
       const hl = allNodesData.find(x => x.id === highlightId);
       statsText += ' | Pfad: ' + (hl ? hl.label : '?') + ' (' + pathSet.size + ' erreichbar)';
     }
     document.getElementById('stats').textContent = statsText;
+
+    // Distanz-Legende nur im attack-surface-Modus ohne Selektion einblenden
+    document.getElementById('dist-legend').style.display = (distColored ? '' : 'none');
+
+    refreshTopPathsPanel();
   }
+
+  // ---- Top-Pfade-Panel ----------------------------------------------------
+  function refreshTopPathsPanel() {
+    const panel = document.getElementById('paths-panel');
+    if (panel.classList.contains('hidden')) return;
+    const body = document.getElementById('paths-body');
+    const maxD = (state.displayMode === 'attack-surface' && state.maxDist < 999) ? state.maxDist : 6;
+    const top  = topAttackPaths(20, maxD);
+    if (top.length === 0) {
+      body.innerHTML = '<div class="empty">Keine Pfade zu Tier-0 gefunden.</div>';
+      return;
+    }
+    body.innerHTML = top.map(n => {
+      const d = distanceToTier0[n.id];
+      const dBucket = Math.min(d, 4);
+      const safeLbl = (n.label || '').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+      return '<div class="row" data-id="' + n.id + '">' +
+             '<span class="lbl">' + safeLbl + '<span class="type">(' + n.nodeType + ')</span></span>' +
+             '<span class="dist" data-d="' + dBucket + '">' + d + ' hops</span>' +
+             '</div>';
+    }).join('');
+    body.querySelectorAll('.row').forEach(row => {
+      row.addEventListener('click', () => {
+        highlightId = row.getAttribute('data-id');
+        const sel = document.getElementById('display-mode');
+        if (sel.value !== 'attack-surface') {
+          sel.value = 'attack-surface';
+          state.displayMode = 'attack-surface';
+        }
+        render();
+        net.focus(highlightId, { scale: 1.0, animation: { duration: 400 } });
+      });
+    });
+  }
+
   render();
 
   document.getElementById('display-mode').addEventListener('change', e => { state.displayMode = e.target.value; render(); });
@@ -397,6 +635,19 @@
     const v = parseInt(e.target.value, 10);
     state.depth = isNaN(v) ? 2 : v;
     render();
+  });
+  document.getElementById('max-dist-select').addEventListener('change', e => {
+    const v = parseInt(e.target.value, 10);
+    state.maxDist = isNaN(v) ? 3 : v;
+    render();
+  });
+  document.getElementById('toggle-paths-btn').addEventListener('click', () => {
+    const panel = document.getElementById('paths-panel');
+    panel.classList.toggle('hidden');
+    if (!panel.classList.contains('hidden')) refreshTopPathsPanel();
+  });
+  document.getElementById('paths-close').addEventListener('click', () => {
+    document.getElementById('paths-panel').classList.add('hidden');
   });
 
   document.getElementById('f-tier0').addEventListener('change', e => { state.tier0Only = e.target.checked; render(); });
