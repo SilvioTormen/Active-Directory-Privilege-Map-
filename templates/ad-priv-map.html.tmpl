@@ -39,6 +39,17 @@
   #paths-panel .row .dist[data-d="4"] { color:#65a30d; }
   #paths-panel .empty { padding:12px; color:#6b7280; font-style:italic; }
   .legend .dist-row { display:flex; align-items:center; gap:6px; }
+  #search-wrap { position:relative; display:inline-block; }
+  #search-results { position:absolute; top:calc(100% + 4px); right:0; background:#fff; border:1px solid #ddd; border-radius:4px; min-width:260px; max-height:320px; overflow-y:auto; z-index:30; box-shadow:0 4px 12px rgba(0,0,0,0.15); font-size:12px; }
+  #search-results.hidden { display:none; }
+  #search-results .item { padding:6px 10px; cursor:pointer; display:flex; justify-content:space-between; gap:10px; border-bottom:1px solid #f3f4f6; }
+  #search-results .item:last-child { border-bottom:none; }
+  #search-results .item .lbl { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #search-results .item .lbl mark { background:#fde68a; padding:0 1px; }
+  #search-results .item .type { color:#6b7280; font-size:10px; flex:0 0 auto; align-self:center; }
+  #search-results .item .tier0-badge { display:inline-block; padding:0 4px; margin-left:4px; font-size:9px; font-weight:600; color:#fff; background:#dc2626; border-radius:3px; }
+  #search-results .item.active, #search-results .item:hover { background:#fef3c7; }
+  #search-results .empty { padding:10px; color:#6b7280; font-style:italic; }
 </style>
 </head>
 <body>
@@ -101,7 +112,7 @@
     <label>Min. Memberships pro User: <input type="number" id="f-minmem" value="0" min="0" max="50" style="width:50px;"></label>
   </div>
   <div class="grp">
-    <label>Suche: <input type="text" id="search" placeholder="Name..." style="width:200px;"></label>
+    <label>Suche: <span id="search-wrap"><input type="text" id="search" placeholder="Name..." style="width:200px;" autocomplete="off"><div id="search-results" class="hidden"></div></span></label>
   </div>
 </div>
 
@@ -924,23 +935,172 @@
     }
   });
 
-  // Suche: erster Match wird markiert, alle erreichbaren Pfade hervorgehoben
-  document.getElementById('search').addEventListener('input', e => {
-    const q = e.target.value.trim().toLowerCase();
-    if (!q) {
-      highlightId = null;
-      render();
+  // ---- Suche mit Debounced Autocomplete ---------------------------------
+  // Keystrokes triggern KEIN render() mehr. Stattdessen wird mit 250 ms
+  // Debounce eine Ergebnisliste berechnet und in einem Dropdown angezeigt.
+  // Erst Enter / Klick / Pfeiltaste+Enter fuehrt zur Auswahl, dann genau ein
+  // render() + ein focusAdaptive() - das verhindert ueberlappende Animationen
+  // und stoppt das "Spinnen" der Map waehrend des Tippens.
+  let searchTimer       = null;
+  let searchResults     = [];
+  let activeResultIdx   = -1;
+  const SEARCH_DEBOUNCE = 250;
+  const SEARCH_LIMIT    = 10;
+
+  function escapeHtml(s) {
+    return (s || '').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+  }
+
+  function highlightMatch(label, queryLower) {
+    const lblSafe = escapeHtml(label);
+    if (!queryLower) return lblSafe;
+    const i = label.toLowerCase().indexOf(queryLower);
+    if (i < 0) return lblSafe;
+    return escapeHtml(label.slice(0, i)) +
+           '<mark>' + escapeHtml(label.slice(i, i + queryLower.length)) + '</mark>' +
+           escapeHtml(label.slice(i + queryLower.length));
+  }
+
+  function scoreMatch(label, sam, queryLower) {
+    const l = (label || '').toLowerCase();
+    const s = (sam   || '').toLowerCase();
+    let score = -1;
+    if (l === queryLower || s === queryLower) score = 1000;
+    else if (l.startsWith(queryLower)) score = 600;
+    else if (s.startsWith(queryLower)) score = 500;
+    else if (l.includes(queryLower))   score = 200;
+    else if (s.includes(queryLower))   score = 150;
+    return score;
+  }
+
+  function computeSearchResults(queryLower) {
+    if (!queryLower) return [];
+    const scored = [];
+    allNodesData.forEach(n => {
+      const score = scoreMatch(n.label, n.SamAccountName, queryLower);
+      if (score < 0) return;
+      scored.push({ n: n, score: score });
+    });
+    scored.sort((a, b) => {
+      if (a.score !== b.score) return b.score - a.score;
+      const at = isTier0(a.n) ? 1 : 0;
+      const bt = isTier0(b.n) ? 1 : 0;
+      if (at !== bt) return bt - at;
+      return (a.n.label || '').length - (b.n.label || '').length;
+    });
+    return scored.slice(0, SEARCH_LIMIT).map(x => x.n);
+  }
+
+  function renderSearchResults(queryLower) {
+    const box = document.getElementById('search-results');
+    if (!queryLower) {
+      box.classList.add('hidden');
       return;
     }
-    const match = allNodesData.find(x => (x.label || '').toLowerCase().includes(q));
-    if (match) {
-      highlightId = match.id;
-      render();
-      focusAdaptive(match.id, currentVisible);
-    } else {
+    if (searchResults.length === 0) {
+      box.classList.remove('hidden');
+      box.innerHTML = '<div class="empty">Keine Treffer.</div>';
+      return;
+    }
+    box.classList.remove('hidden');
+    box.innerHTML = searchResults.map((n, idx) => {
+      const lblHtml = highlightMatch(n.label || '', queryLower);
+      const tier0   = isTier0(n) ? '<span class="tier0-badge">T0</span>' : '';
+      return '<div class="item' + (idx === activeResultIdx ? ' active' : '') + '" data-idx="' + idx + '">' +
+             '<span class="lbl">' + lblHtml + tier0 + '</span>' +
+             '<span class="type">' + escapeHtml(n.nodeType) + '</span>' +
+             '</div>';
+    }).join('');
+    box.querySelectorAll('.item').forEach(el => {
+      // mousedown statt click, damit der Handler vor dem blur-event feuert
+      // (sonst schliesst das blur-Handler das Dropdown bevor der click ankommt)
+      el.addEventListener('mousedown', ev => {
+        ev.preventDefault();
+        selectSearchResult(parseInt(el.getAttribute('data-idx'), 10));
+      });
+    });
+  }
+
+  function selectSearchResult(idx) {
+    if (idx < 0 || idx >= searchResults.length) return;
+    const node = searchResults[idx];
+    highlightId = node.id;
+    render();
+    focusAdaptive(node.id, currentVisible);
+    document.getElementById('search-results').classList.add('hidden');
+  }
+
+  function clearSearch() {
+    document.getElementById('search').value = '';
+    searchResults = [];
+    activeResultIdx = -1;
+    document.getElementById('search-results').classList.add('hidden');
+    if (highlightId !== null) {
       highlightId = null;
       render();
     }
+  }
+
+  const searchInput = document.getElementById('search');
+  searchInput.addEventListener('input', e => {
+    if (searchTimer) clearTimeout(searchTimer);
+    const raw = e.target.value;
+    const q   = raw.trim().toLowerCase();
+    if (!q) {
+      searchResults = [];
+      activeResultIdx = -1;
+      document.getElementById('search-results').classList.add('hidden');
+      return;
+    }
+    searchTimer = setTimeout(() => {
+      searchResults = computeSearchResults(q);
+      activeResultIdx = searchResults.length > 0 ? 0 : -1;
+      renderSearchResults(q);
+    }, SEARCH_DEBOUNCE);
+  });
+
+  searchInput.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown') {
+      if (searchResults.length === 0) return;
+      e.preventDefault();
+      activeResultIdx = (activeResultIdx + 1) % searchResults.length;
+      renderSearchResults(searchInput.value.trim().toLowerCase());
+    } else if (e.key === 'ArrowUp') {
+      if (searchResults.length === 0) return;
+      e.preventDefault();
+      activeResultIdx = (activeResultIdx - 1 + searchResults.length) % searchResults.length;
+      renderSearchResults(searchInput.value.trim().toLowerCase());
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (activeResultIdx < 0 && searchResults.length === 0) {
+        // Debounce noch nicht gelaufen - jetzt sofort matchen
+        if (searchTimer) clearTimeout(searchTimer);
+        const q = searchInput.value.trim().toLowerCase();
+        if (q) {
+          searchResults = computeSearchResults(q);
+          activeResultIdx = searchResults.length > 0 ? 0 : -1;
+        }
+      }
+      if (activeResultIdx >= 0) selectSearchResult(activeResultIdx);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      clearSearch();
+      searchInput.blur();
+    }
+  });
+
+  searchInput.addEventListener('focus', () => {
+    const q = searchInput.value.trim().toLowerCase();
+    if (q && searchResults.length > 0) {
+      document.getElementById('search-results').classList.remove('hidden');
+    }
+  });
+
+  searchInput.addEventListener('blur', () => {
+    // Verzoegert schliessen, damit mousedown-Handler auf Items noch feuern kann
+    setTimeout(() => {
+      document.getElementById('search-results').classList.add('hidden');
+    }, 200);
   });
 </script>
 </body>
