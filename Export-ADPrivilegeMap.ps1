@@ -85,16 +85,26 @@ param(
 )
 
 # ----------------------------- Module laden -----------------------------
+# EDR-Hinweis: Cache.ps1 + Export-Html.ps1 enthalten keine AD-Cmdlets und
+# triggern AMSI nicht. Die anderen Module (Walks/Discovery/Convergence/
+# Delegation/Graph) enthalten Get-ADUser/Get-ADGroup/Get-ADObject - AMSI
+# scant beim Dot-Sourcing den Skript-Body und kann das (faelschlich) als
+# BloodHound/SharpHound-Recon klassifizieren, OHNE dass die Funktionen
+# je aufgerufen werden. Im -FromCache-Modus brauchen wir diese Module
+# NICHT (es findet kein AD-Walk statt), also gar nicht erst laden.
 $ScriptRoot = $PSScriptRoot
 if (-not $ScriptRoot) { $ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path }
 
-. (Join-Path $ScriptRoot 'src/Graph.ps1')
-. (Join-Path $ScriptRoot 'src/Walks.ps1')
-. (Join-Path $ScriptRoot 'src/Discovery.ps1')
-. (Join-Path $ScriptRoot 'src/Convergence.ps1')
-. (Join-Path $ScriptRoot 'src/Delegation.ps1')
 . (Join-Path $ScriptRoot 'src/Cache.ps1')
 . (Join-Path $ScriptRoot 'src/Export-Html.ps1')
+
+if (-not $FromCache) {
+    . (Join-Path $ScriptRoot 'src/Graph.ps1')
+    . (Join-Path $ScriptRoot 'src/Walks.ps1')
+    . (Join-Path $ScriptRoot 'src/Discovery.ps1')
+    . (Join-Path $ScriptRoot 'src/Convergence.ps1')
+    . (Join-Path $ScriptRoot 'src/Delegation.ps1')
+}
 
 $TemplatePath = Join-Path $ScriptRoot 'templates/ad-priv-map.html.tmpl'
 
