@@ -260,22 +260,206 @@
 </div>
 
 <script>
-  // Daten werden via JSONP-Loader aus ad-priv-map-data.js (gleicher Ordner) geladen.
-  // Aus zwei Gruenden extern: (1) Browser blocken fetch() auf file://, JSONP-Script-Tags
-  // werden erlaubt; (2) HTML/Template bearbeiten + Browser refresh erfordert keinen
-  // neuen AD-Walk - die Daten-Datei bleibt zwischen Template-Iterationen gleich.
-  if (!window.__PRIVMAP_DATA || !Array.isArray(window.__PRIVMAP_DATA.nodes) || !Array.isArray(window.__PRIVMAP_DATA.edges)) {
-    document.body.innerHTML =
-      '<div style="padding:30px 40px;font-family:Segoe UI,Tahoma,sans-serif;color:#7f1d1d;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;max-width:680px;margin:60px auto;line-height:1.55;">' +
-      '<h2 style="margin:0 0 12px;color:#7f1d1d;">Datendatei nicht gefunden</h2>' +
-      '<p style="margin:0 0 10px;">Die Datei <code style="background:#fff;padding:1px 5px;border-radius:3px;border:1px solid #fecaca;">ad-priv-map-data.js</code> muss im selben Ordner liegen wie diese HTML. Sie wurde beim Export von <code style="background:#fff;padding:1px 5px;border-radius:3px;border:1px solid #fecaca;">Export-ADPrivilegeMap.ps1</code> erzeugt und sollte automatisch da sein.</p>' +
-      '<p style="margin:0 0 10px;">Wenn du die HTML einzeln verschickt oder verschoben hast: bitte beide Dateien <strong>(ad-priv-map.html und ad-priv-map-data.js)</strong> zusammen kopieren - das HTML laedt die Daten via <code style="background:#fff;padding:1px 5px;border-radius:3px;border:1px solid #fecaca;">&lt;script src&gt;</code>.</p>' +
-      '<p style="margin:0;color:#991b1b;font-size:12px;">Hintergrund: Browser blockieren auf file:// das Lesen externer JSON via fetch(), erlauben aber gleichzeitig &lt;script src&gt;-Loads aus dem gleichen Ordner. Deshalb ist die Datendatei JS-formatiert.</p>' +
-      '</div>';
-    throw new Error('PrivMap data file (ad-priv-map-data.js) missing or invalid');
+  // Daten kommen primaer aus ad-priv-map-data.js via <script src> (loadet
+  // window.__PRIVMAP_DATA). Falls die Datei fehlt (HTML verschoben, manuell
+  // entfernt, neue Maschine ohne Skript-Lauf), oeffnet showDataPicker einen
+  // File-Picker mit Drag-and-Drop, der drei Formate akzeptiert:
+  //   1. ad-priv-map-data.js          (JSONP-Wrapper, Default-Export)
+  //   2. ad-priv-map-cache.json       (PS-Cache mit kapitalisierten Keys,
+  //                                    wird im Browser zu vis-Format transformiert)
+  //   3. beliebige JSON {nodes:[..], edges:[..]} im vis-Format
+  // Damit kann die HTML voll standalone genutzt werden - ohne erneuten Skript-Lauf.
+
+  function colorForPSNode(n) {
+    switch (n.Type) {
+      case 'User':
+        if (n.IsSDPropOrphan)         return '#7c2d12';
+        if (n.AdminCount)             return '#b91c1c';
+        if (n.LateralMemberOnly)      return '#bfdbfe';
+        if (n.Enabled === false)      return '#9ca3af';
+        return '#3b82f6';
+      case 'Group':
+        if (n.IsRoot)                 return '#dc2626';
+        if (n.AdminCount)             return '#ea580c';
+        if (n.LateralParentOnly)      return '#d9f99d';
+        if (n.LateralMemberOnly)      return '#fef3c7';
+        if (n.LateralOnly)            return '#fcd34d';
+        return '#f59e0b';
+      case 'Computer':
+        if (n.LateralMemberOnly)      return '#bbf7d0';
+        return '#10b981';
+      case 'ForeignSecurityPrincipal':
+        if (n.LateralMemberOnly)      return '#e9d5ff';
+        return '#a855f7';
+      case 'OU':                      return '#64748b';
+      default:                        return '#6b7280';
+    }
   }
-  const allNodesData = window.__PRIVMAP_DATA.nodes;
-  const allEdgesData = window.__PRIVMAP_DATA.edges;
+
+  // Spiegelt ConvertTo-PrivMapVisNode aus src/Export-Html.ps1 im Browser.
+  // Damit das HTML PS-Cache-JSON direkt konsumieren kann.
+  function ps2visNode(n) {
+    var delegLine = n.HasDelegation ? ('\nDelegation: ' + n.DelegationType) : '';
+    return {
+      id:                 n.Id,
+      label:              n.DisplayName,
+      title:              'Type: ' + n.Type +
+                          '\nSAM: ' + n.SamAccountName +
+                          '\nEnabled: ' + n.Enabled +
+                          '\nAdminCount: ' + n.AdminCount +
+                          '\nIsRoot: ' + n.IsRoot +
+                          '\nIsSDPropOrphan: ' + n.IsSDPropOrphan +
+                          '\nLateralOnly: ' + n.LateralOnly +
+                          '\nLateralMemberOnly: ' + n.LateralMemberOnly +
+                          '\nLateralParentOnly: ' + n.LateralParentOnly +
+                          delegLine + '\nDN: ' + n.DistinguishedName,
+      color:              colorForPSNode(n),
+      shape:              (n.Type === 'Group' || n.Type === 'OU') ? 'box' : 'dot',
+      nodeType:           n.Type,
+      nodeEnabled:        n.Enabled,
+      nodeAdminCount:     n.AdminCount,
+      nodeIsRoot:         n.IsRoot,
+      nodeIsOrphan:       n.IsSDPropOrphan,
+      nodeLateral:        n.LateralOnly,
+      nodeLatMember:      n.LateralMemberOnly,
+      nodeLatParent:      n.LateralParentOnly,
+      nodeHasDelegation:  n.HasDelegation,
+      nodeDelegationType: n.DelegationType,
+      SamAccountName:     n.SamAccountName
+    };
+  }
+  function ps2visEdge(e) {
+    return { from: e.From, to: e.To, edgeType: e.EdgeType, label: e.Label };
+  }
+  function transformPSCache(parsed) {
+    return {
+      meta:  parsed.Meta || {},
+      nodes: (parsed.Nodes || []).map(ps2visNode),
+      edges: (parsed.Edges || []).map(ps2visEdge)
+    };
+  }
+
+  function parseDataFile(text, filename) {
+    var trimmed = (text || '').trim();
+    var lower   = (filename || '').toLowerCase();
+    // JSONP-Variante (.js oder Text der mit window.__PRIVMAP_DATA beginnt)
+    if (lower.endsWith('.js') || trimmed.indexOf('window.__PRIVMAP_DATA') === 0) {
+      var m = trimmed.match(/window\.__PRIVMAP_DATA\s*=\s*(\{[\s\S]*\})\s*;?\s*$/);
+      if (!m) throw new Error('JS-Datei enthaelt kein "window.__PRIVMAP_DATA = {...};".');
+      return JSON.parse(m[1]);
+    }
+    var parsed;
+    try { parsed = JSON.parse(trimmed); }
+    catch (err) { throw new Error('Datei ist weder JSON noch JSONP: ' + err.message); }
+    // PS-Cache erkennen (kapitalisierte Keys Meta/Nodes/Edges)
+    if (parsed && (Array.isArray(parsed.Nodes) || Array.isArray(parsed.Edges))) {
+      return transformPSCache(parsed);
+    }
+    // vis-Format
+    if (!parsed || !Array.isArray(parsed.nodes) || !Array.isArray(parsed.edges)) {
+      throw new Error('JSON hat weder Nodes/Edges (PS-Cache) noch nodes/edges (vis-Format).');
+    }
+    return parsed;
+  }
+
+  function showDataPicker(initialMsg) {
+    // Loading-Overlay weg, sonst leuchtet "Map wird berechnet..." durch
+    var loadingEl = document.getElementById('loading');
+    if (loadingEl) loadingEl.style.display = 'none';
+
+    var overlay = document.createElement('div');
+    overlay.id = 'data-picker-overlay';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:1000;background:#fff;display:flex;align-items:flex-start;justify-content:center;overflow:auto;font-family:Segoe UI,Tahoma,sans-serif;padding:40px 20px;box-sizing:border-box;';
+    overlay.innerHTML =
+      '<div style="max-width:680px;width:100%;">' +
+      '  <h2 style="color:#1f2937;margin:0 0 12px;font-size:22px;">AD Privilege Map - Daten laden</h2>' +
+      '  <p style="color:#4b5563;line-height:1.55;margin:0 0 20px;font-size:14px;">' +
+         (initialMsg || 'Die Datei <code style="background:#f3f4f6;padding:1px 6px;border-radius:3px;font-size:13px;">ad-priv-map-data.js</code> ist nicht im selben Ordner wie diese HTML. Du kannst stattdessen manuell eine Datei auswaehlen, ohne das Skript erneut laufen lassen zu muessen.') +
+      '  </p>' +
+      '  <div id="drop-zone" style="border:2px dashed #d1d5db;border-radius:8px;padding:40px 24px;background:#fafafa;text-align:center;transition:background 0.15s,border-color 0.15s;cursor:pointer;">' +
+      '    <p style="margin:0 0 16px;font-size:14px;color:#374151;">Datei hier hereinziehen oder <strong>Durchsuchen</strong> klicken</p>' +
+      '    <input type="file" id="picker-input" accept=".js,.json" style="display:none;">' +
+      '    <button id="picker-btn" type="button" style="padding:8px 22px;font-size:14px;background:#1f2937;color:#fff;border:none;border-radius:4px;cursor:pointer;">Durchsuchen...</button>' +
+      '    <div style="margin:20px 0 0;font-size:11px;color:#6b7280;text-align:left;line-height:1.7;">' +
+      '      <strong>Akzeptierte Formate:</strong><br>' +
+      '      &middot; <code>ad-priv-map-data.js</code> (Default-Export vom Skript)<br>' +
+      '      &middot; <code>ad-priv-map-cache.json</code> (PowerShell-Cache, wird automatisch zu vis-Format transformiert)<br>' +
+      '      &middot; Beliebige JSON-Datei mit <code>{nodes:[..], edges:[..]}</code>-Schema' +
+      '    </div>' +
+      '  </div>' +
+      '  <div id="picker-error" style="margin-top:14px;padding:10px 14px;background:#fef2f2;color:#7f1d1d;border:1px solid #fecaca;border-radius:4px;font-size:12px;display:none;"></div>' +
+      '</div>';
+    document.body.appendChild(overlay);
+
+    var input    = document.getElementById('picker-input');
+    var dropZone = document.getElementById('drop-zone');
+    var pickBtn  = document.getElementById('picker-btn');
+    var errBox   = document.getElementById('picker-error');
+
+    function showError(msg) { errBox.style.display = ''; errBox.textContent = msg; }
+
+    function handleFile(file) {
+      errBox.style.display = 'none';
+      var reader = new FileReader();
+      reader.onload = function (ev) {
+        try {
+          var data = parseDataFile(ev.target.result, file.name);
+          if (!data.nodes || data.nodes.length === 0) {
+            throw new Error('Keine Nodes in der Datei gefunden.');
+          }
+          window.__PRIVMAP_DATA = data;
+          if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+          if (loadingEl) loadingEl.style.display = 'flex';
+          init();
+        } catch (err) {
+          showError('Fehler: ' + err.message);
+        }
+      };
+      reader.onerror = function () { showError('Datei konnte nicht gelesen werden.'); };
+      reader.readAsText(file);
+    }
+
+    pickBtn.addEventListener('click', function (e) { e.stopPropagation(); input.click(); });
+    input.addEventListener('change', function (e) {
+      if (e.target.files && e.target.files[0]) handleFile(e.target.files[0]);
+    });
+    dropZone.addEventListener('click', function () { input.click(); });
+    dropZone.addEventListener('dragover', function (e) {
+      e.preventDefault();
+      dropZone.style.background = '#fef3c7';
+      dropZone.style.borderColor = '#dc2626';
+    });
+    dropZone.addEventListener('dragleave', function () {
+      dropZone.style.background = '#fafafa';
+      dropZone.style.borderColor = '#d1d5db';
+    });
+    dropZone.addEventListener('drop', function (e) {
+      e.preventDefault();
+      dropZone.style.background = '#fafafa';
+      dropZone.style.borderColor = '#d1d5db';
+      if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+        handleFile(e.dataTransfer.files[0]);
+      }
+    });
+  }
+
+  // Idempotenz-Schutz - init() darf pro Page-Load nur einmal laufen, sonst
+  // wuerden Event-Handler doppelt binden, vis.Network mehrfach erstellt etc.
+  var __privMapInitialized = false;
+
+  // Dispatch: Daten schon via <script src> da -> init() jetzt. Sonst Picker.
+  if (window.__PRIVMAP_DATA && Array.isArray(window.__PRIVMAP_DATA.nodes) && Array.isArray(window.__PRIVMAP_DATA.edges)) {
+    init();
+  } else {
+    showDataPicker();
+  }
+
+  function init() {
+    if (__privMapInitialized) return;
+    __privMapInitialized = true;
+
+    const allNodesData = window.__PRIVMAP_DATA.nodes;
+    const allEdgesData = window.__PRIVMAP_DATA.edges;
   // Edges mit IDs versehen (Voraussetzung fuer DataSet.update)
   allEdgesData.forEach((e, idx) => { e.id = 'e' + idx; });
 
@@ -2123,6 +2307,7 @@
       document.getElementById('search-results').classList.add('hidden');
     }, 200);
   });
+  }   // end of function init()
 </script>
 </body>
 </html>
