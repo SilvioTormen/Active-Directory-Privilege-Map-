@@ -80,6 +80,110 @@ Folgen eines Loeschens / Umbaus zeigt:
 - **"Im Graph hervorheben"** schaltet in Tiefe-3-Ansicht um die Gruppe
   und fokussiert die Kamera
 
+## EDR & SOC Integration
+
+Dieses Tool ist ein **defensiver AD-Audit-Walker** und macht funktional
+exakt das, was BloodHound, SharpHound, ADRecon und PingCastle auch tun -
+nur fuer die andere Seite. Folge: **jede moderne EDR-Loesung
+(CrowdStrike Falcon, Defender for Endpoint, SentinelOne, Cybereason ...)
+loest beim Lauf einen Alarm aus**. Das ist erwuenschtes Verhalten und
+kein Bug.
+
+### Typische Detektionen
+
+Klassifiziert wird meist als MITRE **T1069 (Permission Groups Discovery)**
+oder **T1087 (Account Discovery)**, einige EDRs gruppieren es aggressiv
+unter **T1003 (OS Credential Dumping)**. Die Trigger-Patterns:
+
+| Skript-Aktion | Typischer EDR-Indikator |
+|---------------|--------------------------|
+| LDAP-Filter `(adminCount=1)` | Tier-0-Enumeration-Signature |
+| LDAP-Filter `userAccountControl:...:=524288` | Unconstrained-Delegation-Hunting |
+| LDAP-Filter `msDS-AllowedToActOnBehalfOfOtherIdentity=*` | RBCD-Hunting |
+| `Get-Acl -Path "AD:..."` + Pruefung auf `DS-Replication-Get-Changes-All` | **DCSync-Detection** (der wahrscheinliche Critical-Trigger bei `-IncludeDelegation`) |
+| Bulk `Get-ADObject`-Queries | "Bulk enumeration"-Heuristik |
+
+### Was *nicht* passiert (fuer SOC-Validierung)
+
+- Keine `Set-AD*` / `New-AD*` / `Add-AD*` / `Remove-AD*` Operationen
+- Kein lsass / SAM / SECURITY-Hive-Zugriff
+- Keine ausgehenden Netzverbindungen (Skript laedt nichts aus dem Web)
+- Keine Registry-Aenderungen
+- Keine Datei-Operationen ausserhalb des explizit angegebenen `-OutputPath`
+- Keine `Invoke-Command` / `Invoke-Expression` / `Add-Type`
+- Kein `ADSI` / `DirectorySearcher` / `System.DirectoryServices`-Bypass
+
+Vollstaendige Verifikation: `grep -rEhn 'Set-AD|Remove-AD|Invoke-Expression|Add-Type|ADSI|DirectorySearcher' *.ps1 src/*.ps1` liefert null Treffer.
+
+### SOC-Whitelist-Anfrage
+
+Sprich vor dem ersten Produktionslauf mit deinem SOC. Ticket-Vorlage:
+
+> Wir setzen ein internes AD-Privilege-Audit-Tool ein (read-only). Der
+> Lauf triggert "OS Credential Dumping" / "Suspicious LDAP Enumeration",
+> weil das Tool dieselben LDAP-Patterns nutzt wie BloodHound (das ist by
+> design - es ist das defensive Gegenstueck). Es schreibt nichts in AD,
+> nichts in die Registry, macht keinen Netzverkehr.
+>
+> Bitte folgendes whitelisten:
+> - **Path**: `<euer-pfad>\Export-ADPrivilegeMap.ps1`
+> - **SHA-256**: (per `Get-FileHash` ermitteln)
+> - **User-Context**: Dedizierter AD-Audit-Account (siehe unten)
+> - **Host-Context**: Audit-Jumpbox (siehe unten)
+> - **Detection-Beispiel**: `<crowdstrike-detection-url>`
+> - **Tool im Git**: `<repo-link>`
+
+Hash-Liste fuer alle PowerShell-Files generieren:
+
+```powershell
+Get-ChildItem -Recurse -Include *.ps1 | Get-FileHash -Algorithm SHA256
+```
+
+### Best Practices fuer Produktionslaeufe
+
+1. **Dedizierter Audit-Account** statt persoenlichem Admin-Account.
+   Macht das SOC-Whitelisting praezise und sauber attributable.
+2. **Dedizierter Audit-Host** (Jumpbox oder Management-VM), den das SOC
+   mit angepassten Policies versieht. Sauber gegenueber jedes-Mal-
+   Whitelisten von ad-hoc Laeufen.
+3. **Change-Ticket vor dem Lauf**: SOC kann Detection-Window
+   unterdruecken oder Alarm pre-acknowledged behandeln.
+4. **Reduzierter Lauf bei akuter Eile** (falls Whitelist noch nicht
+   durch): `.\Export-ADPrivilegeMap.ps1 -Minimal -SkipUserMembershipWalk`
+   ohne `-IncludeDelegation`. Skippt die DCSync-ACL-Suche (der
+   wahrscheinliche Critical-Trigger), reduziert Query-Volumen um ~70%.
+   Du verlierst dafuer die ACL-/Kerberos-Edges im Graph.
+
+### Was du **nicht** tun solltest
+
+Den Code so umbauen, dass er an der EDR vorbeikommt. Das waere
+defensiv falsch - wenn ein Tool dieser Bauart "stealthy" geht, hat
+auch dein zukuenftiger Angreifer einen Vorteil daraus. Ziel ist
+**transparenter, whitelisteter Lauf** durch koordiniertes Vorgehen
+mit dem SOC.
+
+## Output-Dateien
+
+Nach einem erfolgreichen Lauf liegen im `-OutputPath`:
+
+```
+$OutputPath/
+├── ad-priv-map.html         ~780 KB - HTML + vis-network-Lib inline (keine Daten)
+├── ad-priv-map-data.js      ~variabel - window.__PRIVMAP_DATA mit Nodes/Edges/Meta
+└── ad-priv-map-cache.json   ~variabel - Roh-Daten fuer -FromCache-Reruns
+```
+
+**Wichtig: `ad-priv-map.html` und `ad-priv-map-data.js` muessen
+zusammen liegen.** Die HTML laedt die Daten ueber
+`<script src="ad-priv-map-data.js">` aus dem gleichen Ordner. Beide
+Files immer zusammen kopieren oder verschicken - sonst zeigt der Browser
+eine rote Fehlermeldung statt der Map.
+
+Vorteil dieser Trennung: HTML/CSS/JS lassen sich direkt editieren und im
+Browser refresh anzeigen, ohne erneuten Skript-Lauf. Fuer
+Template-Aenderungen reicht `.\Export-ADPrivilegeMap.ps1 -FromCache
+-OutputPath <derselbe Ordner>` (Subsekunden-Re-Render aus Cache).
+
 ## Voraussetzungen
 
 - Windows PowerShell 5.1 oder PowerShell 7+

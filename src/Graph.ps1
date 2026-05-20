@@ -1,3 +1,5 @@
+# Read-only helper for Export-ADPrivilegeMap.ps1 (defensive AD audit tool).
+# In-memory node/edge bookkeeping - no I/O at all.
 # Graph-Helper.
 # Diese Funktionen sind absichtlich scope-lose Closures: sie greifen auf
 # $Nodes, $Edges und $EdgeKeys im aufrufenden Skript-Scope zu (dot-source).

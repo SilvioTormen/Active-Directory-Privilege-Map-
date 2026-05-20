@@ -1,3 +1,5 @@
+# Read-only helper for Export-ADPrivilegeMap.ps1 (defensive AD audit tool).
+# Only Get-AD* cmdlets - no AD modifications.
 # A5: Iterative Konvergenz + Phase 3 (laterale Members) + Phase 4 (laterale Parents).
 # Greifen via Dot-Source auf $Nodes, $Edges und die Walk-Helper zu.
 

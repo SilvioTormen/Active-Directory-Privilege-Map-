@@ -1,3 +1,5 @@
+# Read-only helper for Export-ADPrivilegeMap.ps1 (defensive AD audit tool).
+# No AD/Registry write operations - this module handles JSON cache I/O only.
 # Cache-I/O fuer Nodes/Edges + Meta.
 
 function Resolve-PrivMapCachePath {

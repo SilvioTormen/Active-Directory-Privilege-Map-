@@ -1,3 +1,6 @@
+# Read-only helper for Export-ADPrivilegeMap.ps1 (defensive AD audit tool).
+# Pure local file I/O - reads template + vis-network lib, writes HTML + data.js.
+# No AD queries.
 # HTML-Export aus Template + Nodes/Edges.
 
 function ConvertTo-PrivMapVisNode {

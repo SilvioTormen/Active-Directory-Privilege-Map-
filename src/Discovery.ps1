@@ -1,3 +1,5 @@
+# Read-only helper for Export-ADPrivilegeMap.ps1 (defensive AD audit tool).
+# Only Get-AD* cmdlets - no AD modifications.
 # A1: Root-Discovery
 # A3: SDProp-Waisen
 

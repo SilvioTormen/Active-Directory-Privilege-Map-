@@ -1,3 +1,5 @@
+# Read-only helper for Export-ADPrivilegeMap.ps1 (defensive AD audit tool).
+# Only Get-AD* cmdlets - no AD modifications.
 # AD-Walk-Helper.
 # Greifen ueber Skript-Scope auf $MaxDepth, $VisitedDown, $VisitedUp,
 # $VisitedUserMembership, $VisitedPrimary, $DirectTier0Users, $Nodes zu.

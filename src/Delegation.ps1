@@ -1,3 +1,7 @@
+# Read-only helper for Export-ADPrivilegeMap.ps1 (defensive AD audit tool).
+# Note: this module is the most EDR-noisy part (LDAP queries for delegation
+# attributes + AD-ACL walk for DCSync rights). Only Get-* cmdlets + Get-Acl
+# (LSDT read), no AD modifications.
 # Phase 5: Kerberos-Delegation (Unconstrained / Constrained / RBCD)
 # Phase 6: ACL-Delegation (GenericAll, WriteDACL, WriteOwner, GenericWrite,
 #          ForceChangePassword, DCSync)

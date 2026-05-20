@@ -1,3 +1,18 @@
+# ==============================================================================
+# Active Directory Privilege Map - DEFENSIVE AD AUDIT TOOL (READ-ONLY)
+# ==============================================================================
+# Purpose   Maps Tier-0 group membership + Kerberos/ACL privilege paths.
+# Behavior  ActiveDirectory PowerShell module Get-* cmdlets ONLY.
+#           No Set-* / New-* / Remove-* AD operations.
+#           No SAM / lsass / registry / token access.
+#           No outbound network calls.
+#           Writes only to the user-specified -OutputPath.
+# EDR note  This tool triggers behavioral detections similar to BloodHound /
+#           SharpHound / PingCastle (LDAP (adminCount=1), msDS-AllowedTo*,
+#           DCSync-ACL walk). That is expected for any AD-enumeration audit
+#           tool. See README "EDR & SOC Integration" for whitelist guidance.
+# Source    https://github.com/SilvioTormen/Active-Directory-Privilege-Map-
+# ==============================================================================
 <#
 .SYNOPSIS
     AD Privilege Map - voll aufgeloeste Beziehungsmap aller privilegierten AD-Objekte.
