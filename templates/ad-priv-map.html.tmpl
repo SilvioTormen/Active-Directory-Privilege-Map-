@@ -902,6 +902,16 @@
   }
 
   // ---- Smart-Fit + Adaptive Focus ----------------------------------------
+  // pendingZoomCap haelt den setTimeout-Handle des verzoegerten Zoom-Caps,
+  // der nach einem fit auf wenige Knoten ausgeloest wird. Jede neue Camera-
+  // Operation (focusAdaptive, ein weiterer smartFitVisible) muss diesen Cap
+  // abbrechen, sonst ueberschreibt der 650 ms verspaetete moveTo eine neu
+  // gestartete focus-Animation -> sichtbares Springen der Map.
+  let pendingZoomCap = null;
+  function cancelPendingZoomCap() {
+    if (pendingZoomCap) { clearTimeout(pendingZoomCap); pendingZoomCap = null; }
+  }
+
   function smartFitVisible(visibleSet, force) {
     if (!originalPositions) return;          // noch nicht stabilisiert
     if (visibleSet.size === 0) return;
@@ -910,6 +920,7 @@
     const triggered = force || sizeChangeRatio > 0.3;
     lastVisibleSize = visibleSet.size;
     if (!triggered) return;
+    cancelPendingZoomCap();
     net.fit({
       nodes: [...visibleSet],
       animation: { duration: 600, easingFunction: 'easeInOutQuad' }
@@ -917,7 +928,8 @@
     // Cap: bei sehr wenigen Knoten nach dem Fit den Zoom hart begrenzen,
     // damit Einzelknoten nicht den ganzen Viewport fuellen.
     if (visibleSet.size <= 3) {
-      setTimeout(() => {
+      pendingZoomCap = setTimeout(() => {
+        pendingZoomCap = null;
         if (net.getScale() > 1.5) {
           const vp = net.getViewPosition();
           net.moveTo({ scale: 1.5, position: vp, animation: { duration: 200 } });
@@ -927,6 +939,7 @@
   }
 
   function focusAdaptive(id, visibleSet) {
+    cancelPendingZoomCap();
     const neighbors = ((adjOut[id] || []).filter(n => visibleSet.has(n)).length +
                        (adjIn[id]  || []).filter(n => visibleSet.has(n)).length);
     let scale;
@@ -2089,11 +2102,22 @@
   const refitBtn = document.getElementById('refit-btn');
   refitBtn.addEventListener('click', () => {
     if (isBusy || refitCooldown) return;
+    // isBusy fuer die Dauer der Refit-Animation setzen, sonst koennen
+    // parallele Klicks (z.B. auf Findings/Impact) waehrend des 500 ms
+    // Refit-fit eine zweite Camera-Animation feuern -> Sprung.
     refitCooldown = true;
+    isBusy = true;
+    document.body.classList.add('is-busy');
     refitBtn.classList.add('cooldown');
-    setTimeout(() => { refitCooldown = false; refitBtn.classList.remove('cooldown'); }, 600);
+    setTimeout(() => {
+      refitCooldown = false;
+      isBusy = false;
+      document.body.classList.remove('is-busy');
+      refitBtn.classList.remove('cooldown');
+    }, 600);
 
     try { net.stopSimulation(); } catch (_) { /* Physics-API var bei vis-network optional */ }
+    cancelPendingZoomCap();
 
     if (currentVisible.size === 0) {
       net.fit({ animation: { duration: 500, easingFunction: 'easeInOutQuad' } });
@@ -2124,27 +2148,30 @@
   document.getElementById('layout-select').addEventListener('change', e => {
     if (isBusy) return;   // Layout-Wechsel waehrend laufender Stabilization unterdrucken
     showLoading('Layout-Wechsel...');
+    cancelPendingZoomCap();
     if (e.target.value === 'hierarchical') {
       try { net.stopSimulation(); } catch (_) {}
       net.setOptions(hierarchicalOptions);
-      // Hierarchisches Layout hat keine Physics-Stabilization -> manuell fitten
+      // Hierarchisches Layout hat keine Physics-Stabilization -> manuell fitten.
+      // hideLoading() erst NACH Ende der fit-Animation (400 ms), sonst kann
+      // ein parallel klickender User waehrend des fits einen zweiten Camera-
+      // Move ausloesen.
       setTimeout(() => {
         net.fit({ animation: { duration: 400 } });
-        hideLoading();
+        setTimeout(hideLoading, 420);
       }, 200);
     } else {
-      // Zurueck zu Physics: re-enabled Stabilization
+      // Zurueck zu Physics: re-enabled Stabilization.
+      // hideLoading wird durch stabilizationIterationsDone ausgeloest.
       net.setOptions(physicsOptions);
-      // hideLoading wird durch stabilizationIterationsDone ausgeloest
     }
   });
 
   // ---- Suche mit Debounced Autocomplete ---------------------------------
   // Keystrokes triggern KEIN render() mehr. Stattdessen wird mit 250 ms
   // Debounce eine Ergebnisliste berechnet und in einem Dropdown angezeigt.
-  // Erst Enter / Klick / Pfeiltaste+Enter fuehrt zur Auswahl, dann genau ein
-  // render() + ein focusAdaptive() - das verhindert ueberlappende Animationen
-  // und stoppt das "Spinnen" der Map waehrend des Tippens.
+  // Erst Enter / Klick / Pfeiltaste+Enter fuehrt zur Auswahl, dann genau
+  // ein render({focusId}) - eine einzige Camera-Animation, kein Springen.
   let searchTimer       = null;
   let searchResults     = [];
   let activeResultIdx   = -1;
