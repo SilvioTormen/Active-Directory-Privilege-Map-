@@ -535,6 +535,21 @@
     if (busyTimeout) { clearTimeout(busyTimeout); busyTimeout = null; }
   }
 
+  // Wrapper fuer schwere synchrone Operationen (computeFindings, computeImpact),
+  // die sonst den Main-Thread fuer Sekunden blockieren koennten:
+  //   1. showLoading() mit Label aktivieren (Overlay + Toolbar-Sperre)
+  //   2. Mit requestAnimationFrame einen Paint-Frame abwarten, damit das Overlay
+  //      sichtbar wird bevor die schwere Operation startet
+  //   3. Die Operation in try/finally + hideLoading ausfuehren
+  // Ohne diesen Wrapper sieht der User nur eine eingefrorene UI ohne Feedback.
+  function withBusyOverlay(label, fn) {
+    showLoading(label);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      try { fn(); } catch (e) { console.error('[PrivMap]', e); }
+      finally { hideLoading(); }
+    }));
+  }
+
   net.on('stabilizationProgress', params => {
     const percent = Math.round((params.iterations / params.total) * 100);
     loadingProg.value = percent;
@@ -558,10 +573,17 @@
       originalPositions = net.getPositions();
     }
     hideLoading();
+    // Findings-Initialberechnung erst NACH Stabilization. setTimeout(0) gibt
+    // dem Browser einen Frame zum Painten, dann laeuft computeFindings ohne
+    // mit der Stabilization-Animation zu kollidieren. Nur einmal pro Page-Load.
+    if (typeof refreshFindingsBadge === 'function' && !findingsCache) {
+      setTimeout(() => { try { refreshFindingsBadge(); } catch (e) { console.warn('[PrivMap] findings init failed', e); } }, 50);
+    }
   });
 
   // Nach Drag-End in freien Modi die Position als "neue Wahrheit" merken
   net.on('dragEnd', params => {
+    if (isBusy) return;   // waehrend Stabilization Positionen NICHT cachen
     if (!originalPositions || !params.nodes || params.nodes.length === 0) return;
     if (currentLayoutKey() !== 'free') return;
     const pos = net.getPositions(params.nodes);
@@ -1017,6 +1039,7 @@
     }).join('');
     body.querySelectorAll('.row').forEach(row => {
       row.addEventListener('click', () => {
+        if (isBusy) return;
         customHighlightSet = null;
         highlightId = row.getAttribute('data-id');
         const sel = document.getElementById('display-mode');
@@ -1258,6 +1281,7 @@
     });
     body.querySelectorAll('.row[data-id]').forEach(r => {
       r.addEventListener('click', () => {
+        if (isBusy) return;
         const id = r.getAttribute('data-id');
         customHighlightSet = null;
         highlightId = id;
@@ -1331,16 +1355,24 @@
 
   net.on('oncontext', params => {
     params.event.preventDefault();
+    if (isBusy) return;   // Stabilization laeuft - kein Impact-Panel oeffnen
     const id = net.getNodeAt(params.pointer.DOM);
     if (!id) return;
     const n = nodeById(id);
     if (!n || n.nodeType !== 'Group') return;
-    openImpactPanel(id);
+    // computeImpact macht transitive BFS in beide Richtungen + Capabilities-
+    // Overlap-Scan ueber alle Groups. Bei grossen Tier-0-Gruppen kann das
+    // sekunden-lang den Main-Thread halten - mit Loading-Overlay sichtbar
+    // statt eingefrorener UI.
+    withBusyOverlay('Impact wird berechnet: ' + (n.label || '?'), () => {
+      openImpactPanel(id);
+    });
   });
 
   document.getElementById('impact-close').addEventListener('click', closeImpactPanel);
   document.getElementById('impact-export').addEventListener('click', exportImpactCsv);
   document.getElementById('impact-highlight').addEventListener('click', () => {
+    if (isBusy) return;
     if (!impactCurrentId) return;
     customHighlightSet = null;
     highlightId = impactCurrentId;
@@ -1688,6 +1720,7 @@
     });
     body.querySelectorAll('.f-row').forEach(r => {
       r.addEventListener('click', () => {
+        if (isBusy) return;
         const k = r.getAttribute('data-fkey');
         const i = parseInt(r.getAttribute('data-fidx'), 10);
         const item = (findingsCache[k] || [])[i];
@@ -1793,19 +1826,27 @@
   });
   document.getElementById('findings-close').addEventListener('click', closeFindingsPanel);
   document.getElementById('findings-refresh').addEventListener('click', () => {
-    Object.keys(_transMemCache).forEach(k => delete _transMemCache[k]);
-    findingsCache = null;
-    // Stale Highlight aus einem vorher selektierten Finding wegraeumen.
-    customHighlightSet = null;
-    highlightId = null;
-    renderFindings();
-    refreshFindingsBadge();
-    render();
+    if (isBusy) return;
+    // computeFindings (Cycle-DFS + transitive BFS pro Tier-0-Gruppe) ist O(V+E)
+    // pro Detektor und kann bei grossen ADs mehrere Sekunden brauchen. Ohne
+    // Overlay sah die UI eingefroren aus.
+    withBusyOverlay('Findings werden neu berechnet...', () => {
+      Object.keys(_transMemCache).forEach(k => delete _transMemCache[k]);
+      findingsCache = null;
+      // Stale Highlight aus einem vorher selektierten Finding wegraeumen.
+      customHighlightSet = null;
+      highlightId = null;
+      renderFindings();
+      refreshFindingsBadge();
+      render();
+    });
   });
   document.getElementById('findings-export').addEventListener('click', exportFindingsCsv);
 
-  // Findings beim Laden einmal berechnen, damit der Badge im Toolbar gefuellt ist.
-  refreshFindingsBadge();
+  // Findings-Initialberechnung: NICHT inline ausfuehren, sonst blockiert
+  // computeFindings den Main-Thread waehrend der initialen Physics-Stabilization
+  // und der Progress-Bar bleibt steckenstecken. Stattdessen wird sie unten in
+  // stabilizationIterationsDone deferred.
 
   // toggle-paths-btn soll Findings-Panel schliessen (gleicher Slot) und einen
   // evtl. aktiven Finding-Highlight wegraeumen, damit der Graph beim Wechsel
@@ -1895,8 +1936,10 @@
   });
 
   document.getElementById('layout-select').addEventListener('change', e => {
+    if (isBusy) return;   // Layout-Wechsel waehrend laufender Stabilization unterdrucken
     showLoading('Layout-Wechsel...');
     if (e.target.value === 'hierarchical') {
+      try { net.stopSimulation(); } catch (_) {}
       net.setOptions(hierarchicalOptions);
       // Hierarchisches Layout hat keine Physics-Stabilization -> manuell fitten
       setTimeout(() => {
@@ -1997,6 +2040,7 @@
   }
 
   function selectSearchResult(idx) {
+    if (isBusy) return;
     if (idx < 0 || idx >= searchResults.length) return;
     const node = searchResults[idx];
     customHighlightSet = null;
