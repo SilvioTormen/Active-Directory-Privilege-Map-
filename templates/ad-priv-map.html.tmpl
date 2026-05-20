@@ -21,9 +21,14 @@
   .legend .hint { margin-top:8px; padding-top:8px; border-top:1px solid #eee; color:#555; font-size:11px; line-height:1.4; }
   .swatch { display:inline-block; width:14px; height:14px; margin-right:8px; border-radius:3px; vertical-align:middle; }
   #stats { position:absolute; bottom:10px; left:20px; background:#fff; padding:6px 10px; border:1px solid #ddd; border-radius:4px; font-size:11px; box-shadow:0 1px 4px rgba(0,0,0,0.08); z-index:10; }
-  #loading { position:fixed; top:130px; left:0; right:0; bottom:0; background:rgba(255,255,255,0.95); display:flex; align-items:center; justify-content:center; flex-direction:column; z-index:100; font-size:14px; color:#1f2937; }
+  #loading { position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(255,255,255,0.95); display:flex; align-items:center; justify-content:center; flex-direction:column; z-index:200; font-size:14px; color:#1f2937; }
   #loading progress { width:300px; height:14px; margin:10px 0; }
   #loading-text { font-size:12px; color:#6b7280; margin-top:4px; }
+  /* Wenn die App busy ist (Stabilization / Layout-Wechsel), deaktiviert pointer-events
+     auf der Toolbar verhindern Click-Stacking, das vorher Refit "spinnen" liess. */
+  body.is-busy #toolbar { pointer-events: none; opacity: 0.6; transition: opacity 0.2s; }
+  body.is-busy #toolbar * { cursor: not-allowed !important; }
+  #refit-btn:disabled, #refit-btn.cooldown { opacity:0.55; cursor:not-allowed; }
   #paths-panel { position:absolute; top:140px; left:20px; background:#fff; border:1px solid #ddd; border-radius:6px; font-size:12px; box-shadow:0 2px 8px rgba(0,0,0,0.08); z-index:10; width:330px; max-height:calc(100vh - 170px); display:flex; flex-direction:column; }
   #paths-panel.hidden { display:none; }
   #paths-panel .head { padding:8px 12px; background:#f3f4f6; border-bottom:1px solid #d1d5db; border-radius:6px 6px 0 0; display:flex; justify-content:space-between; align-items:center; font-weight:600; }
@@ -498,16 +503,37 @@
   const container = document.getElementById('network');
   const net = new vis.Network(container, { nodes: nodesDS, edges: edgesDS }, physicsOptions);
 
-  // Loading-Overlay-Steuerung
+  // Loading-Overlay-Steuerung. isBusy spiegelt den Loading-State - solange true,
+  // wird die Toolbar via CSS-Class deaktiviert (sonst koennte ein Refit-Klick
+  // waehrend Stabilization das visuelle "Spinnen" ausloesen).
   const loadingDiv  = document.getElementById('loading');
   const loadingProg = document.getElementById('loading-progress');
   const loadingTxt  = document.getElementById('loading-text');
+  let   isBusy      = true;   // initial true bis Stabilization fertig
+  document.body.classList.add('is-busy');
+  // Safety-Timeout: wenn Stabilization aus irgendeinem Grund nicht innerhalb von
+  // 60 s mit stabilizationIterationsDone abschliesst (interrupted setOptions,
+  // vis-network-Edge-Case), wird hideLoading erzwungen, damit die UI nicht
+  // dauerhaft gesperrt bleibt.
+  let busyTimeout = null;
   function showLoading(text) {
     loadingDiv.style.display = 'flex';
     loadingTxt.textContent = text || 'Map wird berechnet...';
     loadingProg.value = 0;
+    isBusy = true;
+    document.body.classList.add('is-busy');
+    if (busyTimeout) clearTimeout(busyTimeout);
+    busyTimeout = setTimeout(() => {
+      console.warn('[PrivMap] Stabilization-Timeout - hideLoading erzwungen.');
+      hideLoading();
+    }, 60000);
   }
-  function hideLoading() { loadingDiv.style.display = 'none'; }
+  function hideLoading() {
+    loadingDiv.style.display = 'none';
+    isBusy = false;
+    document.body.classList.remove('is-busy');
+    if (busyTimeout) { clearTimeout(busyTimeout); busyTimeout = null; }
+  }
 
   net.on('stabilizationProgress', params => {
     const percent = Math.round((params.iterations / params.total) * 100);
@@ -1821,11 +1847,34 @@
   document.getElementById('paths-close').addEventListener('click', () => {
     document.getElementById('paths-panel').classList.add('hidden');
   });
-  document.getElementById('refit-btn').addEventListener('click', () => {
-    if (currentVisible.size > 0) {
-      net.fit({ nodes: [...currentVisible], animation: { duration: 500, easingFunction: 'easeInOutQuad' } });
+  // Refit-Handler haerten gegen "Spinnen + Blockieren":
+  //   1. Bail wenn isBusy (Stabilization laeuft) - Toolbar ist eh per CSS
+  //      deaktiviert, aber doppelt gesichert
+  //   2. Cooldown von 600 ms verhindert Click-Spam, der Animationen stapelt
+  //   3. net.stopSimulation() vor jedem Fit stoppt eventuell laufende Physics-
+  //      Bewegung, damit Camera und Nodes nicht gegeneinander "tanzen"
+  //   4. Special-Case currentVisible.size === 1: net.fit auf einen einzelnen
+  //      Punkt rechnet Bounding-Box = Null und zoomt extrem rein - statt
+  //      dessen net.focus mit kappten Scale verwenden
+  //   5. Special-Case === 0: weicher fit auf alle Nodes mit konservativem
+  //      Scale-Cap (sonst springt die Camera bei leerem View hart)
+  let refitCooldown = false;
+  const refitBtn = document.getElementById('refit-btn');
+  refitBtn.addEventListener('click', () => {
+    if (isBusy || refitCooldown) return;
+    refitCooldown = true;
+    refitBtn.classList.add('cooldown');
+    setTimeout(() => { refitCooldown = false; refitBtn.classList.remove('cooldown'); }, 600);
+
+    try { net.stopSimulation(); } catch (_) { /* Physics-API var bei vis-network optional */ }
+
+    if (currentVisible.size === 0) {
+      net.fit({ animation: { duration: 500, easingFunction: 'easeInOutQuad' } });
+    } else if (currentVisible.size === 1) {
+      const id = [...currentVisible][0];
+      net.focus(id, { scale: 1.2, animation: { duration: 500, easingFunction: 'easeInOutQuad' } });
     } else {
-      net.fit({ animation: { duration: 500 } });
+      net.fit({ nodes: [...currentVisible], animation: { duration: 500, easingFunction: 'easeInOutQuad' } });
     }
   });
 
