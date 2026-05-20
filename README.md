@@ -173,16 +173,29 @@ $OutputPath/
 └── ad-priv-map-cache.json   ~variabel - Roh-Daten fuer -FromCache-Reruns
 ```
 
-**Wichtig: `ad-priv-map.html` und `ad-priv-map-data.js` muessen
-zusammen liegen.** Die HTML laedt die Daten ueber
+**Wichtig: `ad-priv-map.html` und `ad-priv-map-data.js` gehoeren
+zusammen.** Die HTML laedt die Daten ueber
 `<script src="ad-priv-map-data.js">` aus dem gleichen Ordner. Beide
-Files immer zusammen kopieren oder verschicken - sonst zeigt der Browser
-eine rote Fehlermeldung statt der Map.
+Files immer zusammen kopieren oder verschicken.
 
-Vorteil dieser Trennung: HTML/CSS/JS lassen sich direkt editieren und im
-Browser refresh anzeigen, ohne erneuten Skript-Lauf. Fuer
+Falls die `ad-priv-map-data.js` mal fehlt (HTML verschoben, separat
+verschickt, oder du hast nur die `ad-priv-map-cache.json` zur Hand),
+zeigt die HTML statt eines Fehlers einen **File-Picker mit
+Drag-and-Drop** an. Er akzeptiert drei Formate und erkennt sie
+automatisch:
+
+- `ad-priv-map-data.js` (Default-Export, JSONP-Wrapper)
+- `ad-priv-map-cache.json` (PowerShell-Cache, wird im Browser zu
+  vis-Format transformiert)
+- beliebige JSON mit `{nodes:[...], edges:[...]}`-Schema
+
+Damit kannst du die Map auch ohne erneuten Skript-Lauf oeffnen.
+
+Vorteil der HTML/Data-Trennung: HTML/CSS/JS lassen sich direkt editieren
+und im Browser refresh anzeigen, ohne erneuten Skript-Lauf. Fuer
 Template-Aenderungen reicht `.\Export-ADPrivilegeMap.ps1 -FromCache
--OutputPath <derselbe Ordner>` (Subsekunden-Re-Render aus Cache).
+-OutputPath <derselbe Ordner>` (Subsekunden-Re-Render aus Cache, ohne
+AD-Walk).
 
 ## Voraussetzungen
 
@@ -204,6 +217,10 @@ Template-Aenderungen reicht `.\Export-ADPrivilegeMap.ps1 -FromCache
 
 # Manuelle Root-Auswahl per Out-GridView
 .\Export-ADPrivilegeMap.ps1 -OutputPath C:\Temp -Pick
+
+# HTML neu aus Cache rendern, ohne AD-Walk
+# (kein ActiveDirectory-Modul geladen, keine LDAP-Queries - EDR-freundlich)
+.\Export-ADPrivilegeMap.ps1 -OutputPath C:\Temp -FromCache
 ```
 
 ### Parameter
