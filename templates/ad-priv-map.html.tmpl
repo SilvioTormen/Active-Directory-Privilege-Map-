@@ -668,7 +668,11 @@
     },
     edges: { arrows: { to: { enabled: true, scaleFactor: 1.2 } }, color: NORMAL_EDGE, smooth: { type: 'continuous' } },
     nodes: { font: { size: 12, face: 'Segoe UI' }, borderWidth: 1, size: 14 },
-    interaction: { hover: true, tooltipDelay: 150, navigationButtons: true, keyboard: true }
+    // navigationButtons + keyboard bewusst false: beide triggern intern
+    // moveTo() mit eigener Animation, ohne unser isBusy-Gating zu passieren -
+    // sie wuerden mit laufenden Camera-Animationen kollidieren. Pan via
+    // Maus-Drag und Zoom via Mausrad bleiben weiterhin verfuegbar.
+    interaction: { hover: true, tooltipDelay: 150, navigationButtons: false, keyboard: false }
   };
 
   const hierarchicalOptions = {
@@ -676,7 +680,11 @@
     physics: { enabled: false },
     edges: { arrows: { to: { enabled: true, scaleFactor: 1.2 } }, color: NORMAL_EDGE, smooth: { type: 'cubicBezier', forceDirection: 'vertical', roundness: 0.4 } },
     nodes: { font: { size: 12, face: 'Segoe UI' }, borderWidth: 1, size: 14 },
-    interaction: { hover: true, tooltipDelay: 150, navigationButtons: true, keyboard: true }
+    // navigationButtons + keyboard bewusst false: beide triggern intern
+    // moveTo() mit eigener Animation, ohne unser isBusy-Gating zu passieren -
+    // sie wuerden mit laufenden Camera-Animationen kollidieren. Pan via
+    // Maus-Drag und Zoom via Mausrad bleiben weiterhin verfuegbar.
+    interaction: { hover: true, tooltipDelay: 150, navigationButtons: false, keyboard: false }
   };
 
   // Persistente DataSets: Filter/Highlight nutzen update() statt setData(),
@@ -726,11 +734,19 @@
   //      sichtbar wird bevor die schwere Operation startet
   //   3. Die Operation in try/finally + hideLoading ausfuehren
   // Ohne diesen Wrapper sieht der User nur eine eingefrorene UI ohne Feedback.
-  function withBusyOverlay(label, fn) {
+  // holdMs: optional verzoegert hideLoading() um diese Anzahl Millisekunden.
+  // Sinnvoll wenn fn() eine asynchrone Camera-Animation startet (z.B. render()
+  // -> smartFitVisible mit 600 ms fit) - sonst wuerde isBusy direkt nach fn()
+  // false, der User koennte waehrend laufender Animation klicken und eine
+  // zweite Animation triggern.
+  function withBusyOverlay(label, fn, holdMs) {
     showLoading(label);
     requestAnimationFrame(() => requestAnimationFrame(() => {
       try { fn(); } catch (e) { console.error('[PrivMap]', e); }
-      finally { hideLoading(); }
+      finally {
+        if (holdMs > 0) setTimeout(hideLoading, holdMs);
+        else hideLoading();
+      }
     }));
   }
 
@@ -756,18 +772,28 @@
     if (!originalPositions) {
       originalPositions = net.getPositions();
     }
-    hideLoading();
-    // Findings-Initialberechnung erst NACH Stabilization. setTimeout(0) gibt
-    // dem Browser einen Frame zum Painten, dann laeuft computeFindings ohne
-    // mit der Stabilization-Animation zu kollidieren. Nur einmal pro Page-Load.
+    // hideLoading() laeuft erst NACH der Findings-Initialberechnung -
+    // computeFindings (Cycle-DFS + transitive BFS pro Tier-0-Gruppe) kann
+    // bei grossen ADs mehrere Sekunden Main-Thread blockieren. Wuerde
+    // hideLoading() direkt hier laufen, saehe der User eine fertige UI
+    // aber alle Klicks/Hover sind eingefroren. Deshalb withBusyOverlay,
+    // das das Loading-Overlay solange anzeigt bis computeFindings durch ist.
     if (typeof refreshFindingsBadge === 'function' && !findingsCache) {
-      setTimeout(() => { try { refreshFindingsBadge(); } catch (e) { console.warn('[PrivMap] findings init failed', e); } }, 50);
+      withBusyOverlay('Findings werden initial berechnet...', () => {
+        try { refreshFindingsBadge(); }
+        catch (e) { console.warn('[PrivMap] findings init failed', e); }
+      });
+    } else {
+      hideLoading();
     }
   });
 
   // Nach Drag-End in freien Modi die Position als "neue Wahrheit" merken
   net.on('dragEnd', params => {
-    if (isBusy) return;   // waehrend Stabilization Positionen NICHT cachen
+    if (isBusy) return;          // waehrend Stabilization Positionen NICHT cachen
+    if (isCameraBusy()) return;  // waehrend Camera-Animation ebenfalls nicht -
+                                 // sonst wuerde eine durch Animation verschobene
+                                 // Position als "User-Drag-Endposition" gecached
     if (!originalPositions || !params.nodes || params.nodes.length === 0) return;
     if (currentLayoutKey() !== 'free') return;
     const pos = net.getPositions(params.nodes);
@@ -912,6 +938,19 @@
     if (pendingZoomCap) { clearTimeout(pendingZoomCap); pendingZoomCap = null; }
   }
 
+  // cameraAnimUntil ist der Unix-Timestamp bis zu dem eine Camera-Animation
+  // (fit / focus / moveTo) als "noch aktiv" gilt. Wird nach jedem Camera-Call
+  // mit der Animations-Dauer + 50 ms Puffer gesetzt. Andere asynchrone
+  // Aktionen, die mit der laufenden Animation visuell konkurrieren wuerden -
+  // applyLabelMask (Edge-Label-Pop-In/Out waehrend Pan) und dragEnd-Position-
+  // Persistierung - bailen, wenn isCameraBusy() true ist.
+  let cameraAnimUntil = 0;
+  function markCameraBusy(durationMs) {
+    const t = Date.now() + durationMs + 50;
+    if (t > cameraAnimUntil) cameraAnimUntil = t;
+  }
+  function isCameraBusy() { return Date.now() < cameraAnimUntil; }
+
   function smartFitVisible(visibleSet, force) {
     if (!originalPositions) return;          // noch nicht stabilisiert
     if (visibleSet.size === 0) return;
@@ -921,6 +960,7 @@
     lastVisibleSize = visibleSet.size;
     if (!triggered) return;
     cancelPendingZoomCap();
+    markCameraBusy(600);
     net.fit({
       nodes: [...visibleSet],
       animation: { duration: 600, easingFunction: 'easeInOutQuad' }
@@ -932,6 +972,7 @@
         pendingZoomCap = null;
         if (net.getScale() > 1.5) {
           const vp = net.getViewPosition();
+          markCameraBusy(200);
           net.moveTo({ scale: 1.5, position: vp, animation: { duration: 200 } });
         }
       }, 650);
@@ -948,6 +989,7 @@
     else if (neighbors <= 3)         scale = 1.4;
     else if (neighbors <= 10)        scale = 1.0;
     else                             scale = 0.7;
+    markCameraBusy(400);
     net.focus(id, { scale: scale, animation: { duration: 400, easingFunction: 'easeInOutQuad' } });
   }
 
@@ -967,6 +1009,11 @@
   // LABEL_ZOOM_THRESHOLD faellt, werden Labels geleert.
   function applyLabelMask() {
     if (!originalPositions) return;
+    // Bail wenn eine Camera-Animation laeuft: vis-network feuert zoom-Events
+    // pro Frame, ein Mid-Animation-Threshold-Crossing wuerde Edge-Labels
+    // mitten in der Pan-/Zoom-Bewegung popen lassen. Stattdessen einmal am
+    // Ende der Animation neu evaluieren (zoom-Event nach Animation-End).
+    if (isCameraBusy()) return;
     const z = net.getScale();
     const show = z >= LABEL_ZOOM_THRESHOLD;
     if (show === lastZoomThreshold) return;
@@ -2029,6 +2076,9 @@
     // computeFindings (Cycle-DFS + transitive BFS pro Tier-0-Gruppe) ist O(V+E)
     // pro Detektor und kann bei grossen ADs mehrere Sekunden brauchen. Ohne
     // Overlay sah die UI eingefroren aus.
+    // holdMs=700: render() startet intern eine 600 ms fit-Animation -
+    // hideLoading erst nach Ende der Animation, sonst kann der User in den
+    // 600 ms danach klicken und eine zweite Camera-Animation feuern.
     withBusyOverlay('Findings werden neu berechnet...', () => {
       Object.keys(_transMemCache).forEach(k => delete _transMemCache[k]);
       findingsCache = null;
@@ -2038,7 +2088,7 @@
       renderFindings();
       refreshFindingsBadge();
       render();
-    });
+    }, 700);
   });
   document.getElementById('findings-export').addEventListener('click', exportFindingsCsv);
 
@@ -2047,15 +2097,20 @@
   // und der Progress-Bar bleibt steckenstecken. Stattdessen wird sie unten in
   // stabilizationIterationsDone deferred.
 
-  // toggle-paths-btn soll Findings-Panel schliessen (gleicher Slot) und einen
-  // evtl. aktiven Finding-Highlight wegraeumen, damit der Graph beim Wechsel
-  // in den Top-Pfade-Kontext nicht stale Highlights zeigt.
+  // toggle-paths-btn: Findings-Panel schliessen, evtl. aktives Finding-
+  // Highlight wegraeumen, Paths-Panel selbst toggeln. Frueher waren das
+  // zwei separate addEventListener auf demselben Button - beide feuerten
+  // pro Klick, was zu doppeltem render() und Race-Conditions fuehrte.
   document.getElementById('toggle-paths-btn').addEventListener('click', () => {
+    if (isBusy) return;
     document.getElementById('findings-panel').classList.add('hidden');
     if (customHighlightSet !== null) {
       customHighlightSet = null;
       render();
     }
+    const panel = document.getElementById('paths-panel');
+    panel.classList.toggle('hidden');
+    if (!panel.classList.contains('hidden')) refreshTopPathsPanel();
   });
 
   render();
@@ -2078,11 +2133,6 @@
     const v = parseInt(e.target.value, 10);
     state.maxDist = isNaN(v) ? 3 : v;
     render();
-  });
-  document.getElementById('toggle-paths-btn').addEventListener('click', () => {
-    const panel = document.getElementById('paths-panel');
-    panel.classList.toggle('hidden');
-    if (!panel.classList.contains('hidden')) refreshTopPathsPanel();
   });
   document.getElementById('paths-close').addEventListener('click', () => {
     document.getElementById('paths-panel').classList.add('hidden');
@@ -2118,6 +2168,7 @@
 
     try { net.stopSimulation(); } catch (_) { /* Physics-API var bei vis-network optional */ }
     cancelPendingZoomCap();
+    markCameraBusy(500);
 
     if (currentVisible.size === 0) {
       net.fit({ animation: { duration: 500, easingFunction: 'easeInOutQuad' } });
@@ -2145,20 +2196,32 @@
     render();
   });
 
+  // Layout-Switch timer-Handles, damit ein erneuter Klick die laufenden
+  // setTimeouts abbrechen kann (sonst feuern alte fit/hideLoading nach dem
+  // neuen Layout-Wechsel).
+  let layoutSwitchT1 = null;
+  let layoutSwitchT2 = null;
+  function cancelLayoutSwitchTimers() {
+    if (layoutSwitchT1) { clearTimeout(layoutSwitchT1); layoutSwitchT1 = null; }
+    if (layoutSwitchT2) { clearTimeout(layoutSwitchT2); layoutSwitchT2 = null; }
+  }
   document.getElementById('layout-select').addEventListener('change', e => {
     if (isBusy) return;   // Layout-Wechsel waehrend laufender Stabilization unterdrucken
     showLoading('Layout-Wechsel...');
     cancelPendingZoomCap();
+    cancelLayoutSwitchTimers();
     if (e.target.value === 'hierarchical') {
       try { net.stopSimulation(); } catch (_) {}
       net.setOptions(hierarchicalOptions);
-      // Hierarchisches Layout hat keine Physics-Stabilization -> manuell fitten.
-      // hideLoading() erst NACH Ende der fit-Animation (400 ms), sonst kann
-      // ein parallel klickender User waehrend des fits einen zweiten Camera-
-      // Move ausloesen.
-      setTimeout(() => {
+      // Hierarchisches Layout hat keine Physics-Stabilization -> manuell
+      // fitten. hideLoading() erst nach Ende der fit-Animation (400 ms + 100 ms
+      // Puffer), sonst kann ein parallel klickender User waehrend des fits
+      // einen zweiten Camera-Move ausloesen.
+      layoutSwitchT1 = setTimeout(() => {
+        layoutSwitchT1 = null;
+        markCameraBusy(400);
         net.fit({ animation: { duration: 400 } });
-        setTimeout(hideLoading, 420);
+        layoutSwitchT2 = setTimeout(() => { layoutSwitchT2 = null; hideLoading(); }, 500);
       }, 200);
     } else {
       // Zurueck zu Physics: re-enabled Stabilization.
