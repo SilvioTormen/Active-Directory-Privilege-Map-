@@ -969,7 +969,8 @@
     if (updates.length) edgesDS.update(updates);
   }
 
-  function render() {
+  function render(opts) {
+    opts = opts || {};
     // Schritt 1: Basis-Sichtbarkeit nach Display-Modus
     let baseSet;
     let attackPathSet = null;     // Pfad-Subset im attack-surface-Modus mit Selektion
@@ -1196,9 +1197,17 @@
 
     refreshTopPathsPanel();
 
-    // Smart-Fit am Ende: bei Layout-Key-Wechsel immer, sonst nur wenn sich
-    // das Visible-Set drastisch geaendert hat (>30% der Gesamtknoten).
-    smartFitVisible(visibleSet, layoutChanged);
+    // Kamera-Bewegung: focusId hat Vorrang. Ohne focusId smart-Fit (bei
+    // Layout-Key-Wechsel immer, sonst nur wenn sich das Visible-Set
+    // drastisch geaendert hat). Dieser Branch verhindert das Hin-und-Her-
+    // Springen, das entstand wenn frueher in einem Tick erst render() ->
+    // smartFitVisible (600 ms) und direkt danach focusAdaptive (400 ms)
+    // gefeuert wurden - zwei ueberlappende Kamera-Animationen.
+    if (opts.focusId && visibleSet.has(opts.focusId)) {
+      focusAdaptive(opts.focusId, visibleSet);
+    } else {
+      smartFitVisible(visibleSet, layoutChanged);
+    }
   }
 
   // ---- Top-Pfade-Panel ----------------------------------------------------
@@ -1231,8 +1240,7 @@
           sel.value = 'attack-surface';
           state.displayMode = 'attack-surface';
         }
-        render();
-        focusAdaptive(highlightId, currentVisible);
+        render({ focusId: highlightId });
       });
     });
   }
@@ -1469,8 +1477,7 @@
         const id = r.getAttribute('data-id');
         customHighlightSet = null;
         highlightId = id;
-        render();
-        focusAdaptive(id, currentVisible);
+        render({ focusId: id });
       });
     });
   }
@@ -1564,8 +1571,7 @@
     document.getElementById('display-mode').value = 'depth';
     state.depth = 3;
     document.getElementById('depth-select').value = '3';
-    render();
-    focusAdaptive(impactCurrentId, currentVisible);
+    render({ focusId: impactCurrentId });
   });
 
   // ---- Findings: Anomalie-/Suspicious-Membership-Detektoren ---------------
@@ -1927,8 +1933,7 @@
       highlightId = item.primary;
       state.displayMode = 'attack-surface';
       document.getElementById('display-mode').value = 'attack-surface';
-      render();
-      focusAdaptive(item.primary, currentVisible);
+      render({ focusId: item.primary });
     } else if (t === 'C') {
       customHighlightSet = null;
       highlightId = item.primary;
@@ -1936,8 +1941,7 @@
       document.getElementById('display-mode').value = 'depth';
       state.depth = 1;
       document.getElementById('depth-select').value = '1';
-      render();
-      focusAdaptive(item.primary, currentVisible);
+      render({ focusId: item.primary });
     } else if (t === 'F') {
       // F-User sind selbst Tier-0 (Distanz=0) -> attack-surface waere leer.
       // Stattdessen depth=2: zeigt den User + seine direkten Tier-0-Parents.
@@ -1947,8 +1951,7 @@
       document.getElementById('display-mode').value = 'depth';
       state.depth = 2;
       document.getElementById('depth-select').value = '2';
-      render();
-      focusAdaptive(item.primary, currentVisible);
+      render({ focusId: item.primary });
     } else {
       // B, E, G: Mehrere Knoten markieren
       customHighlightSet = new Set(item.target);
@@ -1956,8 +1959,7 @@
       // Auf 'all'-Modus wechseln, damit der pathSet-Highlight wirkt
       state.displayMode = 'all';
       document.getElementById('display-mode').value = 'all';
-      render();
-      focusAdaptive(item.primary, currentVisible);
+      render({ focusId: item.primary });
     }
   }
 
@@ -2229,8 +2231,7 @@
     const node = searchResults[idx];
     customHighlightSet = null;
     highlightId = node.id;
-    render();
-    focusAdaptive(node.id, currentVisible);
+    render({ focusId: node.id });
     document.getElementById('search-results').classList.add('hidden');
   }
 
