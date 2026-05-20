@@ -52,6 +52,45 @@ function ConvertTo-PrivMapVisNode {
     }
 }
 
+function Test-PrivMapLibIntegrity {
+    # Validiert eine Lib-Datei gegen die SHA256SUMS-Datei im selben Verzeichnis.
+    # Wirft eine Exception bei Mismatch, fehlender SHA256SUMS oder fehlendem Eintrag -
+    # bewusst hart, damit ein manipuliertes Bundle nicht stillschweigend embedded wird.
+    param(
+        [Parameter(Mandatory)][string]$LibPath
+    )
+    $libDir       = Split-Path -Parent $LibPath
+    $libBaseName  = Split-Path -Leaf   $LibPath
+    $sumsPath     = Join-Path $libDir 'SHA256SUMS'
+
+    if (-not (Test-Path -LiteralPath $sumsPath)) {
+        throw "SHA256SUMS fehlt unter $sumsPath. Pruefdatei fuer Lib-Integritaet wurde geloescht oder nicht ausgecheckt - Abbruch."
+    }
+    # Format pro Zeile: "<64-hex-hash>  <filename>" (sha256sum-Standard).
+    $expected = $null
+    foreach ($line in (Get-Content -LiteralPath $sumsPath -ErrorAction Stop)) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        if ($line -match '^\s*([0-9a-fA-F]{64})\s+\*?(.+?)\s*$') {
+            $h = $Matches[1]; $f = $Matches[2]
+            if ($f -eq $libBaseName) { $expected = $h.ToLowerInvariant(); break }
+        }
+    }
+    if (-not $expected) {
+        throw "SHA256SUMS hat keinen Eintrag fuer '$libBaseName'. Vermutlich nicht versionierte Lib-Datei - Abbruch."
+    }
+    $actual = (Get-FileHash -LiteralPath $LibPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -ne $expected) {
+        throw @"
+Integritaetspruefung fehlgeschlagen fuer $libBaseName.
+  Erwartet (SHA256SUMS): $expected
+  Berechnet:             $actual
+Die Lib-Datei wurde modifiziert. Embedding abgebrochen, damit kein potentiell
+manipulierter Code in den Report gelangt. Lib aus dem Repo restaurieren oder
+SHA256SUMS bewusst aktualisieren.
+"@
+    }
+}
+
 function Export-PrivMapHtml {
     param(
         [Parameter(Mandatory)][string]$Path,
@@ -60,7 +99,8 @@ function Export-PrivMapHtml {
         [Parameter(Mandatory)]$Edges,
         [Parameter(Mandatory)][string]$DomainDnsRoot,
         [int]$Rounds = 0,
-        [string]$VisNetworkLibPath
+        [string]$VisNetworkLibPath,
+        [switch]$SkipLibIntegrityCheck   # Notausgang fuer Wartung; per Default IMMER pruefen.
     )
 
     if (-not (Test-Path -LiteralPath $TemplatePath)) {
@@ -76,6 +116,13 @@ function Export-PrivMapHtml {
     }
     if (-not (Test-Path -LiteralPath $VisNetworkLibPath)) {
         throw "vis-network-Lib nicht gefunden: $VisNetworkLibPath. Repository unvollstaendig? Erwartet bei <repo>/lib/vis-network-9.1.9.min.js."
+    }
+    # Integritaetspruefung vor dem Embedding - schuetzt vor lokal manipulierten
+    # Lib-Dateien (z.B. wenn die Datei auf dem Build-Host getauscht wurde).
+    if (-not $SkipLibIntegrityCheck) {
+        Test-PrivMapLibIntegrity -LibPath $VisNetworkLibPath
+    } else {
+        Write-Warning "Lib-Integritaetspruefung deaktiviert (-SkipLibIntegrityCheck). Embedde $VisNetworkLibPath ungeprueft."
     }
     # ReadAllText (statt Get-Content -Raw) konserviert Bytes exakt, ohne BOM/Encoding-
     # Ueberraschungen. Wichtig bei einer minifizierten ~688 KB-Library.
