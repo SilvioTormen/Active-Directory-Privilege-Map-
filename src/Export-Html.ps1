@@ -140,6 +140,21 @@ function Export-PrivMapHtml {
     if ($nJson -notmatch '^\s*\[') { $nJson = "[$nJson]" }
     if ($eJson -notmatch '^\s*\[') { $eJson = "[$eJson]" }
 
+    # Daten-Datei separat schreiben (JSONP-Loader). Liegt zwingend NEBEN der HTML.
+    # Browser blocken fetch() auf file://, aber <script src="...js"> aus dem gleichen
+    # Ordner laden problemlos - deshalb JSONP-Format mit globaler Zuweisung.
+    $dataPath = Join-Path (Split-Path -Parent $Path) 'ad-priv-map-data.js'
+    $meta     = [PSCustomObject]@{
+        generated = (Get-Date).ToString('o')
+        domain    = $DomainDnsRoot
+        nodeCount = @($Nodes).Count
+        edgeCount = @($Edges).Count
+        rounds    = $Rounds
+    }
+    $metaJson = $meta | ConvertTo-Json -Compress
+    $dataJs   = "window.__PRIVMAP_DATA = {`"meta`":$metaJson,`"nodes`":$nJson,`"edges`":$eJson};`n"
+    [System.IO.File]::WriteAllText($dataPath, $dataJs, (New-Object System.Text.UTF8Encoding($false)))
+
     $html = Get-Content -Path $TemplatePath -Raw -ErrorAction Stop
     # Lib-Marker ZUERST ersetzen, damit ggf. enthaltene "$"-Sequenzen nicht mit
     # spaeteren Platzhaltern kollidieren. .Replace() ist plain-string, kein Regex,
@@ -150,9 +165,7 @@ function Export-PrivMapHtml {
     $html = $html.Replace('__NODECOUNT__', [string]@($Nodes).Count)
     $html = $html.Replace('__EDGECOUNT__', [string]@($Edges).Count)
     $html = $html.Replace('__ROUNDS__',    [string]$Rounds)
-    $html = $html.Replace('__NODESJSON__', $nJson)
-    $html = $html.Replace('__EDGESJSON__', $eJson)
 
     $html | Out-File -FilePath $Path -Encoding UTF8
-    return $Path
+    return [PSCustomObject]@{ HtmlPath = $Path; DataPath = $dataPath }
 }

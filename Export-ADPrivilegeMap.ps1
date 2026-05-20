@@ -225,17 +225,18 @@ Write-PrivMapCache -Path $cacheFile -Nodes $Nodes.Values -Edges $Edges -Meta $me
 
 # ----------------------------- HTML-Export -----------------------------
 $htmlPath = Join-Path $OutputPath 'ad-priv-map.html'
-Export-PrivMapHtml `
+$exportResult = Export-PrivMapHtml `
     -Path          $htmlPath `
     -TemplatePath  $TemplatePath `
     -Nodes         $Nodes.Values `
     -Edges         $Edges `
     -DomainDnsRoot $Domain.DNSRoot `
-    -Rounds        $round | Out-Null
+    -Rounds        $round
 
 Write-Host ""
 Write-Host "Fertig:" -ForegroundColor Green
-Write-Host "  HTML:  $htmlPath"
+Write-Host "  HTML:  $($exportResult.HtmlPath)"
+Write-Host "  Data:  $($exportResult.DataPath)  <- muss neben der HTML liegen"
 if (Test-Path -LiteralPath $cacheFile) {
     Write-Host "  Cache: $cacheFile"
 }
@@ -244,8 +245,9 @@ Write-Host ("  Laterale Gruppen: {0}, Lat. Members: {1}, Lat. Parents: {2}" -f $
 if ($delegCount -gt 0 -or $kerbEdges -gt 0 -or $aclEdges -gt 0) {
     Write-Host ("  Delegation: {0} Konten markiert, {1} Kerberos-Edges, {2} ACL-Edges" -f $delegCount, $kerbEdges, $aclEdges)
 }
+Write-Host ""
+Write-Host "  Wichtig: ad-priv-map.html und ad-priv-map-data.js IMMER zusammen kopieren/verschicken." -ForegroundColor Yellow
 if (-not $FromCache) {
-    Write-Host ""
     Write-Host "  Tipp: Naechster Lauf nur fuer HTML/Layout-Aenderungen aus Cache:" -ForegroundColor Gray
     Write-Host "  .\Export-ADPrivilegeMap.ps1 -OutputPath '$OutputPath' -FromCache" -ForegroundColor Gray
 }

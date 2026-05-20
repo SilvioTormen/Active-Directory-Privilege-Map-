@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <title>AD Privilege Map - __DOMAIN__</title>
 <script>__VIS_NETWORK_LIB__</script>
+<script src="ad-priv-map-data.js"></script>
 <style>
   html, body { margin:0; padding:0; height:100%; font-family:'Segoe UI',Tahoma,sans-serif; }
   #header { padding:10px 20px; background:#1f2937; color:#fff; display:flex; align-items:center; justify-content:space-between; }
@@ -254,8 +255,22 @@
 </div>
 
 <script>
-  const allNodesData = __NODESJSON__;
-  const allEdgesData = __EDGESJSON__;
+  // Daten werden via JSONP-Loader aus ad-priv-map-data.js (gleicher Ordner) geladen.
+  // Aus zwei Gruenden extern: (1) Browser blocken fetch() auf file://, JSONP-Script-Tags
+  // werden erlaubt; (2) HTML/Template bearbeiten + Browser refresh erfordert keinen
+  // neuen AD-Walk - die Daten-Datei bleibt zwischen Template-Iterationen gleich.
+  if (!window.__PRIVMAP_DATA || !Array.isArray(window.__PRIVMAP_DATA.nodes) || !Array.isArray(window.__PRIVMAP_DATA.edges)) {
+    document.body.innerHTML =
+      '<div style="padding:30px 40px;font-family:Segoe UI,Tahoma,sans-serif;color:#7f1d1d;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;max-width:680px;margin:60px auto;line-height:1.55;">' +
+      '<h2 style="margin:0 0 12px;color:#7f1d1d;">Datendatei nicht gefunden</h2>' +
+      '<p style="margin:0 0 10px;">Die Datei <code style="background:#fff;padding:1px 5px;border-radius:3px;border:1px solid #fecaca;">ad-priv-map-data.js</code> muss im selben Ordner liegen wie diese HTML. Sie wurde beim Export von <code style="background:#fff;padding:1px 5px;border-radius:3px;border:1px solid #fecaca;">Export-ADPrivilegeMap.ps1</code> erzeugt und sollte automatisch da sein.</p>' +
+      '<p style="margin:0 0 10px;">Wenn du die HTML einzeln verschickt oder verschoben hast: bitte beide Dateien <strong>(ad-priv-map.html und ad-priv-map-data.js)</strong> zusammen kopieren - das HTML laedt die Daten via <code style="background:#fff;padding:1px 5px;border-radius:3px;border:1px solid #fecaca;">&lt;script src&gt;</code>.</p>' +
+      '<p style="margin:0;color:#991b1b;font-size:12px;">Hintergrund: Browser blockieren auf file:// das Lesen externer JSON via fetch(), erlauben aber gleichzeitig &lt;script src&gt;-Loads aus dem gleichen Ordner. Deshalb ist die Datendatei JS-formatiert.</p>' +
+      '</div>';
+    throw new Error('PrivMap data file (ad-priv-map-data.js) missing or invalid');
+  }
+  const allNodesData = window.__PRIVMAP_DATA.nodes;
+  const allEdgesData = window.__PRIVMAP_DATA.edges;
   // Edges mit IDs versehen (Voraussetzung fuer DataSet.update)
   allEdgesData.forEach((e, idx) => { e.id = 'e' + idx; });
 
