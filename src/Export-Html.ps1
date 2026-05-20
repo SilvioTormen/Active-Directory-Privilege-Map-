@@ -59,12 +59,27 @@ function Export-PrivMapHtml {
         [Parameter(Mandatory)]$Nodes,
         [Parameter(Mandatory)]$Edges,
         [Parameter(Mandatory)][string]$DomainDnsRoot,
-        [int]$Rounds = 0
+        [int]$Rounds = 0,
+        [string]$VisNetworkLibPath
     )
 
     if (-not (Test-Path -LiteralPath $TemplatePath)) {
         throw "HTML-Template nicht gefunden: $TemplatePath"
     }
+
+    # vis-network-Lib: Default-Pfad ist <repo>/lib/vis-network-9.1.9.min.js,
+    # relativ zum Template aufgeloest. Damit funktioniert der Export voll
+    # offline - keine externe CDN-Abhaengigkeit im fertigen HTML.
+    if (-not $VisNetworkLibPath) {
+        $templateDir   = Split-Path -Parent $TemplatePath
+        $VisNetworkLibPath = Join-Path (Split-Path -Parent $templateDir) 'lib/vis-network-9.1.9.min.js'
+    }
+    if (-not (Test-Path -LiteralPath $VisNetworkLibPath)) {
+        throw "vis-network-Lib nicht gefunden: $VisNetworkLibPath. Repository unvollstaendig? Erwartet bei <repo>/lib/vis-network-9.1.9.min.js."
+    }
+    # ReadAllText (statt Get-Content -Raw) konserviert Bytes exakt, ohne BOM/Encoding-
+    # Ueberraschungen. Wichtig bei einer minifizierten ~688 KB-Library.
+    $visLib = [System.IO.File]::ReadAllText($VisNetworkLibPath, [System.Text.Encoding]::UTF8)
 
     $visNodes = $Nodes | ForEach-Object { ConvertTo-PrivMapVisNode -Node $_ }
 
@@ -79,6 +94,10 @@ function Export-PrivMapHtml {
     if ($eJson -notmatch '^\s*\[') { $eJson = "[$eJson]" }
 
     $html = Get-Content -Path $TemplatePath -Raw -ErrorAction Stop
+    # Lib-Marker ZUERST ersetzen, damit ggf. enthaltene "$"-Sequenzen nicht mit
+    # spaeteren Platzhaltern kollidieren. .Replace() ist plain-string, kein Regex,
+    # also sind $1/$& im Lib-Code unschaedlich.
+    $html = $html.Replace('__VIS_NETWORK_LIB__', $visLib)
     $html = $html.Replace('__DOMAIN__',    [string]$DomainDnsRoot)
     $html = $html.Replace('__TIMESTAMP__', (Get-Date).ToString('yyyy-MM-dd HH:mm'))
     $html = $html.Replace('__NODECOUNT__', [string]@($Nodes).Count)
