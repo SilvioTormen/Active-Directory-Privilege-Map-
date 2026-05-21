@@ -118,6 +118,13 @@ if (-not $FromCache) {
     $Domain = Get-ADDomain
 }
 
+# -ExtraRootGroups hat im -FromCache-Modus keine Wirkung, weil dort kein
+# Walk stattfindet. Bisher wurden die Werte stillschweigend ignoriert -
+# jetzt explizit warnen, damit der User nicht falsche Erwartungen hat.
+if ($FromCache -and $ExtraRootGroups.Count -gt 0) {
+    Write-Warning "-ExtraRootGroups wird im -FromCache-Modus ignoriert. Die Root-Liste stammt aus dem Cache. Fuer neue Root-Gruppen einen normalen Lauf (ohne -FromCache) ausfuehren."
+}
+
 # ----------------------------- Datenstrukturen -----------------------------
 $Nodes                 = @{}
 $Edges                 = New-Object System.Collections.Generic.List[PSCustomObject]

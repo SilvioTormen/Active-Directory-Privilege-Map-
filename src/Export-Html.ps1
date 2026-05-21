@@ -146,7 +146,13 @@ function Export-PrivMapHtml {
     # Daten-Datei separat schreiben (JSONP-Loader). Liegt zwingend NEBEN der HTML.
     # Browser blocken fetch() auf file://, aber <script src="...js"> aus dem gleichen
     # Ordner laden problemlos - deshalb JSONP-Format mit globaler Zuweisung.
+    # Pfad absolutieren - WriteAllText (.NET) nimmt CWD, das sich von der
+    # PS-Location unterscheiden kann (insb. nach Set-Location ohne
+    # [Environment]::CurrentDirectory-Update).
     $dataPath = Join-Path (Split-Path -Parent $Path) 'ad-priv-map-data.js'
+    if (-not [System.IO.Path]::IsPathRooted($dataPath)) {
+        $dataPath = Join-Path (Get-Location).Path $dataPath
+    }
     $meta     = [PSCustomObject]@{
         generated = (Get-Date).ToString('o')
         domain    = $DomainDnsRoot
@@ -169,6 +175,11 @@ function Export-PrivMapHtml {
     $html = $html.Replace('__EDGECOUNT__', [string]@($Edges).Count)
     $html = $html.Replace('__ROUNDS__',    [string]$Rounds)
 
-    $html | Out-File -FilePath $Path -Encoding UTF8
+    # WriteAllText mit UTF8Encoding($false) statt Out-File -Encoding UTF8 -
+    # das schreibt in PowerShell 5.1 ein BOM, das bei manchen Browsern
+    # <!DOCTYPE>-Quirks-Mode triggern kann. .NET-API nimmt CWD, nicht
+    # PowerShell-Location, daher Pfad absolutieren.
+    $htmlAbsPath = if ([System.IO.Path]::IsPathRooted($Path)) { $Path } else { Join-Path (Get-Location).Path $Path }
+    [System.IO.File]::WriteAllText($htmlAbsPath, $html, (New-Object System.Text.UTF8Encoding($false)))
     return [PSCustomObject]@{ HtmlPath = $Path; DataPath = $dataPath }
 }

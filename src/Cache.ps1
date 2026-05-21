@@ -57,7 +57,13 @@ function Write-PrivMapCache {
         Edges = @($Edges)
     }
     try {
-        $cacheData | ConvertTo-Json -Depth 10 -Compress | Out-File -FilePath $Path -Encoding UTF8
+        # WriteAllText mit UTF8Encoding($false) statt Out-File -Encoding UTF8 -
+        # das schreibt in PowerShell 5.1 ein BOM, das manche JSON-Parser stört
+        # (insb. wenn die Datei mit dem File-Picker im HTML manuell geladen wird).
+        # .NET-API nimmt CWD, nicht PowerShell-Location, daher Pfad absolutieren.
+        $json = $cacheData | ConvertTo-Json -Depth 10 -Compress
+        $absPath = if ([System.IO.Path]::IsPathRooted($Path)) { $Path } else { Join-Path (Get-Location).Path $Path }
+        [System.IO.File]::WriteAllText($absPath, $json, (New-Object System.Text.UTF8Encoding($false)))
         Write-Host "  Cache geschrieben: $Path" -ForegroundColor Gray
     } catch {
         Write-Warning "Cache konnte nicht geschrieben werden: $_"
