@@ -460,7 +460,18 @@
     __privMapInitialized = true;
 
     const allNodesData = window.__PRIVMAP_DATA.nodes;
-    const allEdgesData = window.__PRIVMAP_DATA.edges;
+    const _rawEdges    = window.__PRIVMAP_DATA.edges;
+
+  // Bekannte Node-IDs fuer Edge-Validierung. Edges deren from/to auf einen
+  // nicht-existierenden Knoten verweisen (kaputte Cache.json, geloeschtes
+  // AD-Object) werden hart rausgefiltert - sonst wuerde BFS spaeter
+  // nodeById(id).label crashen und der Tooltip "undefined" anzeigen.
+  const _knownIds = new Set(allNodesData.map(n => n.id));
+  const allEdgesData = _rawEdges.filter(e => _knownIds.has(e.from) && _knownIds.has(e.to));
+  const _droppedEdges = _rawEdges.length - allEdgesData.length;
+  if (_droppedEdges > 0) {
+    console.warn('[PrivMap] ' + _droppedEdges + ' Edges mit unbekannten Node-IDs wurden ignoriert.');
+  }
   // Edges mit IDs versehen (Voraussetzung fuer DataSet.update)
   allEdgesData.forEach((e, idx) => { e.id = 'e' + idx; });
 
@@ -540,10 +551,14 @@
 
   const distanceToTier0 = {};
   (function computeDistances() {
+    // Head-Pointer-BFS (O(1) je Step) statt queue.shift() (O(n) wegen Array-
+    // Reshift). Bei 10k+ Knoten ist das der Unterschied zwischen Sekunden
+    // und Millisekunden.
     const queue = [];
     tier0Ids.forEach(id => { distanceToTier0[id] = 0; queue.push(id); });
-    while (queue.length) {
-      const cur = queue.shift();
+    let qh = 0;
+    while (qh < queue.length) {
+      const cur = queue[qh++];
       const d   = distanceToTier0[cur];
       (adjIn[cur] || []).forEach(n => {
         if (distanceToTier0[n] === undefined) {
@@ -563,8 +578,9 @@
     if (distanceToTier0[startId] === undefined) return new Set();
     const result = new Set([startId]);
     const queue = [startId];
-    while (queue.length) {
-      const cur     = queue.shift();
+    let qh = 0;
+    while (qh < queue.length) {
+      const cur     = queue[qh++];
       const curDist = distanceToTier0[cur];
       if (curDist === 0) continue;
       (adjOut[cur] || []).forEach(n => {
@@ -590,8 +606,9 @@
     if (distanceToTier0[startId] === undefined) return new Set();
     const set = new Set([startId]);
     const queue = [startId];
-    while (queue.length) {
-      const cur = queue.shift();
+    let qh = 0;
+    while (qh < queue.length) {
+      const cur = queue[qh++];
       (adjOut[cur] || []).forEach(n => {
         if (distanceToTier0[n] !== undefined && !set.has(n)) {
           set.add(n);
@@ -606,8 +623,9 @@
   function ownedConeFrom(startId) {
     const set = new Set([startId]);
     const queue = [startId];
-    while (queue.length) {
-      const cur = queue.shift();
+    let qh = 0;
+    while (qh < queue.length) {
+      const cur = queue[qh++];
       (adjOut[cur] || []).forEach(n => {
         if (!set.has(n)) { set.add(n); queue.push(n); }
       });
@@ -696,15 +714,17 @@
   function findReachable(startId, visibleSet) {
     const set = new Set([startId]);
     let queue = [startId];
-    while (queue.length) {
-      const cur = queue.shift();
+    let qh = 0;
+    while (qh < queue.length) {
+      const cur = queue[qh++];
       (adjOut[cur] || []).forEach(n => {
         if (!set.has(n) && visibleSet.has(n)) { set.add(n); queue.push(n); }
       });
     }
     queue = [startId];
-    while (queue.length) {
-      const cur = queue.shift();
+    qh = 0;
+    while (qh < queue.length) {
+      const cur = queue[qh++];
       (adjIn[cur] || []).forEach(n => {
         if (!set.has(n) && visibleSet.has(n)) { set.add(n); queue.push(n); }
       });
@@ -944,10 +964,7 @@
         render();
       } else {
         // Pin
-        highlightId = id;
-        customHighlightSet = null;
-        hoverPreviewId = null;
-        clearFunnel();   // Funnel-Heatmap wuerde sonst mit dem Pfad konkurrieren
+        pinHighlight(id);
         // attack-surface-Modus ist der natuerliche Container fuer "Pfad zu
         // Tier-0". Wenn der User in 'all' oder 'depth' war, sieht er sonst
         // nur einen einzelnen Border ohne Pfad-Markierung.
@@ -958,8 +975,11 @@
         render({ focusId: id });
       }
     } else {
-      // Klick auf leere Flaeche: alle Highlights aufraeumen
-      if (highlightId !== null || customHighlightSet !== null) {
+      // Klick auf leere Flaeche: pinned Highlight + Hover-Preview aufraeumen.
+      // Funnel-Daten ueberleben dabei bewusst (eigene Analyse-Mode), damit der
+      // User nicht durch einen versehentlichen Leerklick eine teure Berechnung
+      // verliert. Wer Funnel weg will: erneut Funnel-Button oder Mode-Wechsel.
+      if (highlightId !== null || customHighlightSet !== null || hoverPreviewId !== null) {
         highlightId = null;
         customHighlightSet = null;
         hoverPreviewId = null;
@@ -1034,8 +1054,9 @@
     const adj = (direction === 'inbound') ? adjIn : adjOut;
     const layer = { [centerId]: 0 };
     const queue = [centerId];
-    while (queue.length) {
-      const cur = queue.shift();
+    let qh = 0;
+    while (qh < queue.length) {
+      const cur = queue[qh++];
       (adj[cur] || []).forEach(n => {
         if (visibleIds.has(n) && layer[n] === undefined) {
           layer[n] = layer[cur] + 1;
@@ -1059,7 +1080,19 @@
     ringKeys.forEach(l => {
       const items = buckets[l].slice().sort();
       if (l === 0) {
-        updates.push({ id: items[0], x: 0, y: 0 });
+        // Center-Layer hat normalerweise nur centerId, aber wenn jemand
+        // applyRadialLayout spaeter mit mehreren Roots aufrufen wuerde,
+        // wuerden die weiteren Items hier stillschweigend verloren gehen.
+        // Defensiv: alle Center-Items in einem kleinen inner Ring platzieren.
+        if (items.length === 1) {
+          updates.push({ id: items[0], x: 0, y: 0 });
+        } else {
+          const innerR = 80;
+          items.forEach((id, i) => {
+            const a = (2 * Math.PI * i) / items.length;
+            updates.push({ id: id, x: Math.cos(a) * innerR, y: Math.sin(a) * innerR });
+          });
+        }
         return;
       }
       const ringIdx  = (l === -1) ? disconnectedRing : l;
@@ -1461,7 +1494,7 @@
     let statsText = 'Sichtbar: ' + visibleSet.size + ' Nodes';
     if (state.displayMode === 'depth') {
       if (highlightId !== null) {
-        const hl = allNodesData.find(x => x.id === highlightId);
+        const hl = nodeById(highlightId);
         const dLabel = (state.depth >= 999) ? 'alle' : state.depth;
         statsText += ' | Zentrum: ' + (hl ? hl.label : '?') + ' (Tiefe ' + dLabel + ')';
       } else {
@@ -1469,7 +1502,7 @@
       }
     } else if (state.displayMode === 'attack-surface') {
       if (attackPathSet && highlightId !== null) {
-        const hl = allNodesData.find(x => x.id === highlightId);
+        const hl = nodeById(highlightId);
         const d  = distanceToTier0[highlightId];
         statsText += ' | Pfade: ' + (hl ? hl.label : '?') + ' -> Tier-0 (kuerzester: ' + d + ' Hops, ' + attackPathSet.size + ' Knoten auf allen Pfaden)';
       } else {
@@ -1478,13 +1511,13 @@
       }
     } else if (state.displayMode === 'owned-cone') {
       if (ownedConeSet && highlightId !== null) {
-        const hl = allNodesData.find(x => x.id === highlightId);
+        const hl = nodeById(highlightId);
         statsText += ' | Owned-Cone von ' + (hl ? hl.label : '?') + ' (' + ownedConeSet.size + ' uebernehmbar)';
       } else {
         statsText += ' | Owned-Cone: bitte einen Node anklicken oder suchen';
       }
     } else if (pathSet && !customHighlightSet) {
-      const hl = allNodesData.find(x => x.id === highlightId);
+      const hl = nodeById(highlightId);
       statsText += ' | Pfad: ' + (hl ? hl.label : '?') + ' (' + pathSet.size + ' erreichbar)';
     }
     if (customHighlightSet) {
@@ -1533,8 +1566,7 @@
     body.querySelectorAll('.row').forEach(row => {
       row.addEventListener('click', () => {
         if (isBusy) return;
-        customHighlightSet = null;
-        highlightId = row.getAttribute('data-id');
+        pinHighlight(row.getAttribute('data-id'));
         const sel = document.getElementById('display-mode');
         if (sel.value !== 'attack-surface') {
           sel.value = 'attack-surface';
@@ -1588,8 +1620,9 @@
     {
       const q = [groupId];
       const seen = new Set([groupId]);
-      while (q.length) {
-        const cur = q.shift();
+      let qh = 0;
+      while (qh < q.length) {
+        const cur = q[qh++];
         (adjIn[cur] || []).forEach(n => {
           if (seen.has(n)) return;
           seen.add(n);
@@ -1607,8 +1640,9 @@
     {
       const q = [groupId];
       const seen = new Set([groupId]);
-      while (q.length) {
-        const cur = q.shift();
+      let qh = 0;
+      while (qh < q.length) {
+        const cur = q[qh++];
         (adjOut[cur] || []).forEach(n => {
           if (seen.has(n)) return;
           seen.add(n);
@@ -1775,8 +1809,7 @@
       r.addEventListener('click', () => {
         if (isBusy) return;
         const id = r.getAttribute('data-id');
-        customHighlightSet = null;
-        highlightId = id;
+        pinHighlight(id);
         render({ focusId: id });
       });
     });
@@ -1865,8 +1898,7 @@
   document.getElementById('impact-highlight').addEventListener('click', () => {
     if (isBusy) return;
     if (!impactCurrentId) return;
-    customHighlightSet = null;
-    highlightId = impactCurrentId;
+    pinHighlight(impactCurrentId);
     state.displayMode = 'depth';
     document.getElementById('display-mode').value = 'depth';
     state.depth = 3;
@@ -1941,7 +1973,7 @@
   }
 
   // Wir cachen das Ergebnis pro Gruppe, weil das fuer grosse ADs sonst teuer ist.
-  const _transMemCache = {};
+  let _transMemCache = {};
   function transMemCached(id) {
     if (_transMemCache[id] === undefined) _transMemCache[id] = transitiveMemberCount(id);
     return _transMemCache[id];
@@ -2229,14 +2261,12 @@
   function selectFinding(item) {
     const t = item.type;
     if (t === 'A' || t === 'D' || t === 'H') {
-      customHighlightSet = null;
-      highlightId = item.primary;
+      pinHighlight(item.primary);
       state.displayMode = 'attack-surface';
       document.getElementById('display-mode').value = 'attack-surface';
       render({ focusId: item.primary });
     } else if (t === 'C') {
-      customHighlightSet = null;
-      highlightId = item.primary;
+      pinHighlight(item.primary);
       state.displayMode = 'depth';
       document.getElementById('display-mode').value = 'depth';
       state.depth = 1;
@@ -2245,8 +2275,7 @@
     } else if (t === 'F') {
       // F-User sind selbst Tier-0 (Distanz=0) -> attack-surface waere leer.
       // Stattdessen depth=2: zeigt den User + seine direkten Tier-0-Parents.
-      customHighlightSet = null;
-      highlightId = item.primary;
+      pinHighlight(item.primary);
       state.displayMode = 'depth';
       document.getElementById('display-mode').value = 'depth';
       state.depth = 2;
@@ -2254,8 +2283,7 @@
       render({ focusId: item.primary });
     } else {
       // B, E, G: Mehrere Knoten markieren
-      customHighlightSet = new Set(item.target);
-      highlightId = item.primary;
+      pinHighlight(item.primary, new Set(item.target));
       // Auf 'all'-Modus wechseln, damit der pathSet-Highlight wirkt
       state.displayMode = 'all';
       document.getElementById('display-mode').value = 'all';
@@ -2320,7 +2348,7 @@
     // hideLoading erst nach Ende der Animation, sonst kann der User in den
     // 600 ms danach klicken und eine zweite Camera-Animation feuern.
     withBusyOverlay('Findings werden neu berechnet...', () => {
-      Object.keys(_transMemCache).forEach(k => delete _transMemCache[k]);
+      _transMemCache = {};  // schneller als Object.keys().forEach(delete) + weniger Alloc
       findingsCache = null;
       // Stale Highlight aus einem vorher selektierten Finding wegraeumen.
       customHighlightSet = null;
@@ -2360,6 +2388,20 @@
   // "force-visible-via-customHighlight" verfaelscht werden (User wuerde sonst
   // Knoten sehen, die der Filter eigentlich versteckt).
   function clearFindingHighlight() { customHighlightSet = null; }
+
+  // Zentraler Highlight-Setter: vermeidet die fruehere Falle, dass jede
+  // Aufrufer-Stelle 3-4 State-Variablen einzeln synchron halten musste -
+  // und es vergass (typisch: clearFunnel wurde an 7+ Stellen vergessen,
+  // so dass die Funnel-Heatmap visuell durch eine Findings-/Search-/Impact-
+  // Auswahl ueberlebte). pinHighlight setzt highlightId/customHighlightSet
+  // und cleart konsistent hoverPreviewId + Funnel.
+  // Aufruf mit (null, null) = expliziter Clear inklusive Funnel.
+  function pinHighlight(id, set) {
+    highlightId = id || null;
+    customHighlightSet = set || null;
+    hoverPreviewId = null;
+    clearFunnel();
+  }
 
   document.getElementById('display-mode').addEventListener('change', e => { clearFindingHighlight(); clearFunnel(); state.displayMode = e.target.value; render(); });
   document.getElementById('depth-select').addEventListener('change', e => {
@@ -2609,8 +2651,7 @@
     if (isBusy) return;
     if (idx < 0 || idx >= searchResults.length) return;
     const node = searchResults[idx];
-    customHighlightSet = null;
-    highlightId = node.id;
+    pinHighlight(node.id);
     render({ focusId: node.id });
     document.getElementById('search-results').classList.add('hidden');
   }
