@@ -161,6 +161,7 @@
     </label>
     <button id="toggle-paths-btn" type="button" style="padding:4px 10px; cursor:pointer;">Top-Pfade</button>
     <button id="toggle-findings-btn" type="button" style="padding:4px 10px; cursor:pointer;" title="Anomalien / verdaechtige Mitgliedschaften">Findings <span class="badge zero" id="findings-badge">0</span></button>
+    <button id="funnel-btn" type="button" style="padding:4px 10px; cursor:pointer;" title="Sampled 10 random User und zeigt eine Heatmap, wo deren Eskalations-Pfade zu Tier-0 zusammenlaufen - die heissesten Nodes sind die kritischen Choke-Points">Funnel</button>
     <button id="refit-btn" type="button" style="padding:4px 10px; cursor:pointer;" title="Ansicht auf sichtbare Nodes zuruecksetzen">Refit</button>
   </div>
   <div class="grp">
@@ -502,6 +503,20 @@
 
   let highlightId = null;  // ID des aktuell markierten Nodes fuer Pfad-Hervorhebung
   let customHighlightSet = null;  // Set von Node-IDs, die zusammen markiert werden (z.B. Cycle-Members aus Findings)
+  let hoverPreviewId = null;  // Wenn die Maus 200 ms ueber einem Node steht, wird sein
+                              // Pfad zu Tier-0 als Live-Preview rot eingeblendet.
+                              // Klick auf einen Node "pinnt" ihn dann via highlightId.
+                              // Wenn highlightId/customHighlightSet aktiv sind, ist Hover deaktiviert.
+  let hoverTimer = null;
+
+  // Multi-Source-Funnel: Sample N zufaelliger non-Tier-0-User, berechne
+  // ihre Pfade zu Tier-0, aggregiere pro Node wie oft er auf einem dieser
+  // Pfade liegt. Visualisierung als Heatmap (Border-Color nach Score) -
+  // die heissesten Knoten sind statistisch die kritischen Choke-Points
+  // durch die viele Eskalations-Pfade laufen.
+  let funnelScores = null;     // Map node-id -> count (wie viele Sample-Pfade gehen durch ihn)
+  let funnelSampleIds = [];    // die N gesampleten Source-User-IDs (mit dickem Border markiert)
+  let funnelMaxScore = 0;      // max count fuer Color-Normalisierung
 
   const HIGHLIGHT_COLOR = '#dc2626';   // rot fuer Pfad
   const DIMMED_BG       = '#e5e7eb';   // hellgrau fuer ausgeblendete Nodes
@@ -599,6 +614,54 @@
       if (c < state.minMembers) return false;
     }
     return true;
+  }
+
+  // Multi-Source-Funnel: sampled N zufaellige non-Tier-0-User, berechnet
+  // ihre kuerzesten Pfade zu Tier-0 und aggregiert pro Knoten, durch wie
+  // viele dieser Pfade er liegt. Liefert {scores, sample, max} oder null
+  // wenn keine User mit Tier-0-Erreichbarkeit existieren.
+  function computeFunnelConvergence(sampleSize) {
+    const candidates = allNodesData.filter(n =>
+      n.nodeType === 'User' &&
+      distanceToTier0[n.id] !== undefined &&
+      distanceToTier0[n.id] > 0
+    );
+    if (candidates.length === 0) return null;
+
+    // Fisher-Yates partial shuffle - kein O(n^2) durch wiederholtes Random
+    const pool = candidates.slice();
+    const k = Math.min(sampleSize, pool.length);
+    for (let i = 0; i < k; i++) {
+      const j = i + Math.floor(Math.random() * (pool.length - i));
+      const tmp = pool[i]; pool[i] = pool[j]; pool[j] = tmp;
+    }
+    const sample = pool.slice(0, k);
+
+    const scores = {};
+    const sampleIds = [];
+    let maxScore = 0;
+    for (const user of sample) {
+      sampleIds.push(user.id);
+      const pathSet = shortestPathsToTier0(user.id);
+      if (!pathSet) continue;
+      pathSet.forEach(id => {
+        scores[id] = (scores[id] || 0) + 1;
+        if (scores[id] > maxScore) maxScore = scores[id];
+      });
+    }
+    return { scores, sampleIds, maxScore };
+  }
+
+  // Heatmap-Color basierend auf Score 0..max:
+  // 1 (cold)   -> #fef3c7 (gelb)
+  // mid        -> #f59e0b (orange)
+  // max (hot)  -> #dc2626 (rot)
+  function funnelHeatColor(score, max) {
+    if (score <= 0 || max <= 0) return null;
+    const t = score / max;
+    if (t < 0.34) return '#fde68a';
+    if (t < 0.67) return '#f59e0b';
+    return '#dc2626';
   }
 
   // BFS in beide Richtungen ab startId. Liefert Set aller erreichbaren, sichtbaren Node-IDs.
@@ -801,6 +864,81 @@
   });
 
   net.on('zoom', () => applyLabelMask());
+
+  // ---- Hover-Preview + Klick-Pin ----------------------------------------
+  // Maus 200 ms ueber einem Node = kuerzester Pfad zu Tier-0 wird live als
+  // roter Overlay eingeblendet (Border + Pfad-Edges), ohne den Rest zu
+  // dimmen. Maus weg = Preview verschwindet nach 100 ms (kurzer Delay,
+  // damit Move-A->B kein Flackern erzeugt).
+  // Linksklick auf einen Node = der Pfad wird "gepinnt" via highlightId,
+  // jetzt MIT Dimmen (klassisches Pfad-Highlight), und die Map fokussiert
+  // auf den Node. Erneuter Klick auf den gleichen Node = un-pin.
+  // Klick auf leeren Hintergrund = alle Highlights weg.
+  //
+  // Hover ist deaktiviert solange ein persistent Highlight aktiv ist
+  // (highlightId oder customHighlightSet), damit gepinnte Pfade durch
+  // Maus-Bewegung nicht stoeren.
+  net.on('hoverNode', params => {
+    if (isBusy || isCameraBusy()) return;
+    if (highlightId !== null || customHighlightSet !== null) return;
+    if (hoverTimer) clearTimeout(hoverTimer);
+    const id = params.node;
+    hoverTimer = setTimeout(() => {
+      hoverTimer = null;
+      if (hoverPreviewId === id) return;
+      if (!currentVisible.has(id)) return;
+      hoverPreviewId = id;
+      render();
+    }, 200);
+  });
+
+  net.on('blurNode', () => {
+    if (hoverTimer) clearTimeout(hoverTimer);
+    hoverTimer = setTimeout(() => {
+      hoverTimer = null;
+      if (hoverPreviewId !== null) {
+        hoverPreviewId = null;
+        render();
+      }
+    }, 100);
+  });
+
+  net.on('click', params => {
+    if (isBusy || isCameraBusy()) return;
+    if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
+    if (params.nodes && params.nodes.length > 0) {
+      const id = params.nodes[0];
+      if (highlightId === id) {
+        // Toggle: gepinnter Node erneut geklickt -> un-pin
+        highlightId = null;
+        customHighlightSet = null;
+        hoverPreviewId = null;
+        render();
+      } else {
+        // Pin
+        highlightId = id;
+        customHighlightSet = null;
+        hoverPreviewId = null;
+        clearFunnel();   // Funnel-Heatmap wuerde sonst mit dem Pfad konkurrieren
+        // attack-surface-Modus ist der natuerliche Container fuer "Pfad zu
+        // Tier-0". Wenn der User in 'all' oder 'depth' war, sieht er sonst
+        // nur einen einzelnen Border ohne Pfad-Markierung.
+        if (state.displayMode !== 'attack-surface' && state.displayMode !== 'owned-cone') {
+          state.displayMode = 'attack-surface';
+          document.getElementById('display-mode').value = 'attack-surface';
+        }
+        render({ focusId: id });
+      }
+    } else {
+      // Klick auf leere Flaeche: alle Highlights aufraeumen
+      if (highlightId !== null || customHighlightSet !== null) {
+        highlightId = null;
+        customHighlightSet = null;
+        hoverPreviewId = null;
+        render();
+      }
+    }
+  });
 
   function currentLayoutKey() {
     if (state.displayMode === 'attack-surface') {
@@ -1074,6 +1212,11 @@
     if (customHighlightSet) {
       customHighlightSet.forEach(id => baseSet.add(id));
     }
+    // funnelScores ebenfalls: alle Knoten auf einem Sample-Pfad muessen
+    // sichtbar sein, sonst sieht der User die Heatmap nicht.
+    if (funnelScores) {
+      Object.keys(funnelScores).forEach(id => baseSet.add(id));
+    }
 
     const visibleSet = new Set();
     allNodesData.forEach(n => {
@@ -1093,6 +1236,17 @@
       distColored   = false;
     } else if (state.displayMode === 'all' && highlightId !== null && visibleSet.has(highlightId)) {
       pathSet = findReachable(highlightId, visibleSet);
+    }
+
+    // hoverPath (Live-Preview ohne Dimmen): nur aktiv wenn kein persistent
+    // Highlight gesetzt ist. Zeigt den kuerzesten Pfad zu Tier-0 des
+    // gehoverten Nodes als roter Border + rote Edges entlang dem Pfad.
+    // Im Unterschied zu pathSet/attackPathSet wird der Rest NICHT gedimmt -
+    // sonst flackert die ganze Map bei jeder Maus-Bewegung.
+    let hoverPath = null;
+    if (hoverPreviewId !== null && highlightId === null && !customHighlightSet &&
+        visibleSet.has(hoverPreviewId) && distanceToTier0[hoverPreviewId] !== undefined) {
+      hoverPath = shortestPathsToTier0(hoverPreviewId);
     }
 
     // Layout per Modus setzen (programmatisch fuer attack-surface / owned-cone,
@@ -1143,6 +1297,27 @@
           u.color = { background: n._origColor, border: HIGHLIGHT_COLOR };
           u.borderWidth = 6;
           u.font = { color: '#000', size: 12, face: 'Segoe UI' };
+        } else if (hoverPath && hoverPath.has(n.id)) {
+          // Hover-Preview: roter Border, KEIN Dimmen aussen rum.
+          // Center-Node bekommt 5 px (statt 6 wie bei pinned) um Hover vom
+          // gepinnten Zustand unterscheidbar zu machen.
+          u.color = { background: n._origColor, border: HIGHLIGHT_COLOR };
+          u.borderWidth = (n.id === hoverPreviewId) ? 5 : 3;
+          u.font = { color: '#000', size: 12, face: 'Segoe UI' };
+        } else if (funnelScores) {
+          const sc = funnelScores[n.id] || 0;
+          const heat = funnelHeatColor(sc, funnelMaxScore);
+          const isSampleSrc = funnelSampleIds.indexOf(n.id) !== -1;
+          if (heat) {
+            u.color = { background: n._origColor, border: heat };
+            u.borderWidth = isSampleSrc ? 5 : (sc / funnelMaxScore >= 0.67 ? 4 : 3);
+            u.font = { color: '#000', size: 12, face: 'Segoe UI' };
+          } else {
+            // Node liegt auf KEINEM Sample-Pfad - dimmen
+            u.color = { background: DIMMED_BG, border: DIMMED_BG };
+            u.borderWidth = 1;
+            u.font = { color: DIMMED_FONT, size: 12, face: 'Segoe UI' };
+          }
         } else {
           u.color = n._origColor;
           u.borderWidth = 1;
@@ -1202,6 +1377,38 @@
             u.width = 2;
           } else {
             u.color = { color: NORMAL_EDGE, opacity: 0.4 };
+            u.width = 1;
+          }
+        } else if (hoverPath) {
+          // Hover-Preview Edges: nur Edges entlang dem Pfad zu Tier-0 rot,
+          // Rest bleibt im Normal-Look (kein Opacity-Dimmen, sonst flackert
+          // die Map bei jeder Maus-Bewegung).
+          const df = distanceToTier0[e.from];
+          const dt = distanceToTier0[e.to];
+          if (hoverPath.has(e.from) && hoverPath.has(e.to) && df === dt + 1) {
+            u.color = { color: HIGHLIGHT_COLOR, highlight: HIGHLIGHT_COLOR };
+            u.width = 3;
+            if (e.label) intended = e.label;
+          } else {
+            u.color = { color: baseColor };
+            u.width = baseWidth;
+            if (e.label) intended = e.label;
+          }
+        } else if (funnelScores) {
+          // Funnel: Edges nur zwischen Nodes mit Score > 0 in Heat-Color,
+          // sonst dimmen (anders als Hover-Preview, hier IST Dimmen erwuenscht
+          // weil sonst die Funnel-Visualisierung in der Masse untergeht).
+          const df = distanceToTier0[e.from];
+          const dt = distanceToTier0[e.to];
+          const sf = funnelScores[e.from] || 0;
+          const st = funnelScores[e.to]   || 0;
+          if (sf > 0 && st > 0 && df === dt + 1) {
+            const edgeScore = Math.min(sf, st);
+            u.color = { color: funnelHeatColor(edgeScore, funnelMaxScore) };
+            u.width = (edgeScore / funnelMaxScore >= 0.67) ? 3 : 2;
+            if (e.label) intended = e.label;
+          } else {
+            u.color = { color: DIMMED_BG, opacity: 0.2 };
             u.width = 1;
           }
         } else {
@@ -2121,7 +2328,7 @@
   // Knoten sehen, die der Filter eigentlich versteckt).
   function clearFindingHighlight() { customHighlightSet = null; }
 
-  document.getElementById('display-mode').addEventListener('change', e => { clearFindingHighlight(); state.displayMode = e.target.value; render(); });
+  document.getElementById('display-mode').addEventListener('change', e => { clearFindingHighlight(); clearFunnel(); state.displayMode = e.target.value; render(); });
   document.getElementById('depth-select').addEventListener('change', e => {
     clearFindingHighlight();
     const v = parseInt(e.target.value, 10);
@@ -2148,6 +2355,56 @@
   //      dessen net.focus mit kappten Scale verwenden
   //   5. Special-Case === 0: weicher fit auf alle Nodes mit konservativem
   //      Scale-Cap (sonst springt die Camera bei leerem View hart)
+  // ---- Multi-Source-Funnel-Button ---------------------------------------
+  // Klick: sampled 10 zufaellige non-Tier-0-User, zeichnet alle ihre kuerzesten
+  // Pfade zu Tier-0 als Convergence-Heatmap. Die heissesten Knoten sind die
+  // statistisch kritischsten Choke-Points - durch sie laufen die meisten
+  // Eskalations-Pfade. Erneuter Klick = Re-Sample (andere 10 User).
+  // Wechsel auf einen anderen Display-Mode loescht den Funnel automatisch.
+  const FUNNEL_SAMPLE_SIZE = 10;
+  const funnelBtn = document.getElementById('funnel-btn');
+  function clearFunnel() {
+    funnelScores = null;
+    funnelSampleIds = [];
+    funnelMaxScore = 0;
+    funnelBtn.classList.remove('active');
+    funnelBtn.style.background = '';
+    funnelBtn.style.color = '';
+  }
+  funnelBtn.addEventListener('click', () => {
+    if (isBusy) return;
+    withBusyOverlay('Funnel: sample ' + FUNNEL_SAMPLE_SIZE + ' random Users + Pfade berechnen...', () => {
+      const result = computeFunnelConvergence(FUNNEL_SAMPLE_SIZE);
+      if (!result || result.maxScore === 0) {
+        clearFunnel();
+        alert('Funnel: keine User mit Pfad zu Tier-0 gefunden.');
+        return;
+      }
+      // Andere Highlights aufraeumen damit die Heatmap nicht ueberlagert wird
+      highlightId = null;
+      customHighlightSet = null;
+      hoverPreviewId = null;
+      funnelScores = result.scores;
+      funnelSampleIds = result.sampleIds;
+      funnelMaxScore = result.maxScore;
+      funnelBtn.classList.add('active');
+      funnelBtn.style.background = '#dc2626';
+      funnelBtn.style.color = '#fff';
+      // Top-Choke-Points in Konsole loggen (Audit-Hinweis)
+      const top = Object.keys(result.scores)
+        .map(id => ({ id, score: result.scores[id], node: nodeById(id) }))
+        .filter(x => x.node && !funnelSampleIds.includes(x.id))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 10);
+      console.log('[PrivMap] Funnel - Top 10 Choke-Points aus ' + FUNNEL_SAMPLE_SIZE + ' Sample-Usern:');
+      top.forEach((x, i) => {
+        const pct = Math.round((x.score / FUNNEL_SAMPLE_SIZE) * 100);
+        console.log('  ' + (i+1) + '. ' + x.node.label + ' (' + x.node.nodeType + ') - ' +
+                    x.score + '/' + FUNNEL_SAMPLE_SIZE + ' Pfade (' + pct + '%)');
+      });
+      render();
+    }, 700);
+  });
   let refitCooldown = false;
   const refitBtn = document.getElementById('refit-btn');
   refitBtn.addEventListener('click', () => {
