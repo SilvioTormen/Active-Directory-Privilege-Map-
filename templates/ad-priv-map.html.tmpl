@@ -556,6 +556,9 @@
 
   // Set aller Nodes, die auf einem kuerzesten Pfad von startId zu *einem* Tier-0-Node liegen.
   // Voraussetzung: distanceToTier0[startId] ist definiert.
+  // shortestPathsToTier0: nur die Knoten auf einem der KUERZESTEN Pfade
+  // (BFS mit strikter Distanz-Reduktion um genau 1). Schnell zu rechnen,
+  // gut fuer Hover-Preview wo es um visuelle Geschwindigkeit geht.
   function shortestPathsToTier0(startId) {
     if (distanceToTier0[startId] === undefined) return new Set();
     const result = new Set([startId]);
@@ -572,6 +575,31 @@
       });
     }
     return result;
+  }
+
+  // allPathsToTier0: ALLE Knoten auf IRGENDEINEM Pfad startId -> Tier-0,
+  // nicht nur die kuerzesten. Forward-BFS in adjOut-Richtung; ein Knoten
+  // ist drin wenn er von startId erreichbar ist UND selbst Tier-0
+  // erreichen kann (distanceToTier0 definiert). Per Definition: jeder
+  // solche Knoten liegt auf mindestens einem Pfad startId -> Tier-0.
+  //
+  // Verwendet beim Klick-Pin (User will "alle Pfade von Alice zu DA"
+  // sehen, nicht nur die 2-Hop-Variante - auch die 4-Hop-Umwege ueber
+  // alternative Gruppen sind sicherheitsrelevant).
+  function allPathsToTier0(startId) {
+    if (distanceToTier0[startId] === undefined) return new Set();
+    const set = new Set([startId]);
+    const queue = [startId];
+    while (queue.length) {
+      const cur = queue.shift();
+      (adjOut[cur] || []).forEach(n => {
+        if (distanceToTier0[n] !== undefined && !set.has(n)) {
+          set.add(n);
+          queue.push(n);
+        }
+      });
+    }
+    return set;
   }
 
   // Outbound transitive Huelle ab startId (= alles, was startId direkt/indirekt uebernehmen kann).
@@ -1184,7 +1212,12 @@
       }
     } else if (state.displayMode === 'attack-surface') {
       if (highlightId !== null && distanceToTier0[highlightId] !== undefined) {
-        attackPathSet = shortestPathsToTier0(highlightId);
+        // allPathsToTier0 statt shortestPaths: zeigt ALLE Routen die der
+        // markierte Knoten zu Tier-0 hat - auch die laengeren Umwege ueber
+        // alternative Gruppen. Sicherheitsrelevant: ein kurzer Pfad
+        // koennte bewusst geblockt sein, der laengere ist die echte
+        // Eskalationsgefahr.
+        attackPathSet = allPathsToTier0(highlightId);
         baseSet = new Set(attackPathSet);
       } else {
         baseSet = new Set();
@@ -1438,7 +1471,7 @@
       if (attackPathSet && highlightId !== null) {
         const hl = allNodesData.find(x => x.id === highlightId);
         const d  = distanceToTier0[highlightId];
-        statsText += ' | Pfad: ' + (hl ? hl.label : '?') + ' -> Tier-0 (' + d + ' Hops, ' + attackPathSet.size + ' Knoten im Layer)';
+        statsText += ' | Pfade: ' + (hl ? hl.label : '?') + ' -> Tier-0 (kuerzester: ' + d + ' Hops, ' + attackPathSet.size + ' Knoten auf allen Pfaden)';
       } else {
         const mLabel = (state.maxDist >= 999) ? 'unbegrenzt' : ('<=' + state.maxDist);
         statsText += ' | Tier-0-Risiko, Max-Distanz ' + mLabel;
