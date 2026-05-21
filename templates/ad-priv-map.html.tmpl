@@ -7,15 +7,20 @@
 <script src="ad-priv-map-data.js"></script>
 <style>
   html, body { margin:0; padding:0; height:100%; font-family:'Segoe UI',Tahoma,sans-serif; }
-  #header { padding:10px 20px; background:#1f2937; color:#fff; display:flex; align-items:center; justify-content:space-between; }
+  /* Flex-Layout fuer body: header + toolbar haben natuerliche Hoehe und
+     shrinken nicht, network fuellt den Rest. Ersetzt das frueher hartcodierte
+     calc(100vh - 130px), das bei wrapping Toolbar (schmale Browser-Fenster)
+     den Network-Canvas ueber den Tab-Rand wachsen liess. */
+  body { display:flex; flex-direction:column; }
+  #header { padding:10px 20px; background:#1f2937; color:#fff; display:flex; align-items:center; justify-content:space-between; flex-shrink:0; }
   #header h1 { font-size:16px; margin:0; }
   #header .meta { font-size:12px; opacity:0.7; }
-  #toolbar { padding:8px 20px; background:#f3f4f6; border-bottom:1px solid #d1d5db; display:flex; flex-wrap:wrap; gap:16px; align-items:center; font-size:13px; }
+  #toolbar { padding:8px 20px; background:#f3f4f6; border-bottom:1px solid #d1d5db; display:flex; flex-wrap:wrap; gap:16px; align-items:center; font-size:13px; flex-shrink:0; }
   #toolbar label { display:flex; align-items:center; gap:4px; cursor:pointer; user-select:none; }
   #toolbar select, #toolbar input[type='text'], #toolbar input[type='number'] { padding:4px 6px; font-size:13px; }
   #toolbar .grp { display:flex; gap:12px; align-items:center; }
   #toolbar .grp + .grp { border-left:1px solid #d1d5db; padding-left:16px; }
-  #network { width:100%; height:calc(100vh - 130px); background:#fafafa; }
+  #network { width:100%; flex:1 1 auto; min-height:0; background:#fafafa; }
   .legend { position:absolute; top:140px; right:20px; background:#fff; padding:10px 14px; border:1px solid #ddd; border-radius:6px; font-size:12px; box-shadow:0 2px 8px rgba(0,0,0,0.08); z-index:10; max-width:300px; }
   .legend div { margin:4px 0; }
   .legend .hint { margin-top:8px; padding-top:8px; border-top:1px solid #eee; color:#555; font-size:11px; line-height:1.4; }
@@ -876,6 +881,9 @@
   let lastVisibleSize   = 0;
   let lastZoomThreshold = true;  // sind Edge-Labels aktuell sichtbar?
   let currentVisible    = new Set();   // wird von render() gepflegt
+  let lastDragEndAt     = 0;     // Timestamp des letzten dragEnd-Events. vis-network
+                                 // feuert nach jedem Drag-Release auch ein click-Event,
+                                 // was sonst versehentliches Pin-Toggle ausloesen wuerde.
   const LABEL_ZOOM_THRESHOLD = 0.6;
 
   net.on('stabilizationIterationsDone', () => {
@@ -901,6 +909,9 @@
 
   // Nach Drag-End in freien Modi die Position als "neue Wahrheit" merken
   net.on('dragEnd', params => {
+    // Timestamp setzen damit der direkt darauf folgende click-Event nicht
+    // versehentlich Pin-Toggle ausloest (vis-network feuert beide Events).
+    lastDragEndAt = Date.now();
     if (isBusy) return;          // waehrend Stabilization Positionen NICHT cachen
     if (isCameraBusy()) return;  // waehrend Camera-Animation ebenfalls nicht -
                                  // sonst wuerde eine durch Animation verschobene
@@ -953,6 +964,9 @@
 
   net.on('click', params => {
     if (isBusy || isCameraBusy()) return;
+    // vis-network feuert nach jedem dragEnd auch ein click - der wuerde sonst
+    // Pin-Toggle ausloesen. 250 ms Toleranz reicht (Drag-Release + Event-Hop).
+    if (Date.now() - lastDragEndAt < 250) return;
     if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
     if (params.nodes && params.nodes.length > 0) {
       const id = params.nodes[0];
@@ -2448,6 +2462,15 @@
   }
   funnelBtn.addEventListener('click', () => {
     if (isBusy) return;
+    // Toggle-off: wenn Funnel schon aktiv ist, deaktivieren statt resampeln.
+    // Re-Sample geht jetzt explizit ueber doppel-klick / shift+klick? Nein -
+    // einfacher: Toggle. Wer re-samplen will, klickt einfach zweimal
+    // (einmal off, einmal on -> neues Sample).
+    if (funnelScores) {
+      clearFunnel();
+      render();
+      return;
+    }
     withBusyOverlay('Funnel: sample ' + FUNNEL_SAMPLE_SIZE + ' random Users + Pfade berechnen...', () => {
       const result = computeFunnelConvergence(FUNNEL_SAMPLE_SIZE);
       if (!result || result.maxScore === 0) {
